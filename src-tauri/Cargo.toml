@@ -1,0 +1,39 @@
+[package]
+name = "virtual-keyboard-pad"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "virtual_keyboard_pad_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# tauri-plugin-positioner = { version = "2.0", features = ["tray-icon"] }
+gtk = { version = "0.18" }
+gdk = { version = "0.18" }
+gio = { version = "0.18" }
+gdk-sys = { version = "0.18" }
+gdkx11 = { version = "0.18" }
+enigo = "0.2.1"
+hidapi = "2.6.3"
+tokio = { version = "1.41.1", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+log = "0.4"
+
+
+
