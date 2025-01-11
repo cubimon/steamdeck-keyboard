@@ -15,4 +15,3 @@ This template should help get you started developing with Tauri in vanilla HTML,
 ### TODO
 
 - sometimes opened in background
-- pausing steam process breaks touchpad driver? making it act like steam isn't running (like steam isn't accessing the hidraw device and defaulting to "lizard mode")

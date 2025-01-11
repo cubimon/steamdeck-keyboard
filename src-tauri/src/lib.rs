@@ -4,7 +4,7 @@ use std::{fs, sync::Mutex};
 
 use log::{debug, error, warn, info};
 
-use hidapi::DeviceInfo;
+use hidapi::{DeviceInfo, HidDevice};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 use enigo::{
@@ -83,7 +83,6 @@ fn send_key(
         app_state: State<'_, Mutex<AppState>>,
         key: &str,
         state: &str) {
-    let mut app_state = app_state.lock().unwrap();
     let mapped_key = map_key(key);
     let mapped_direction = map_state(state);
     if mapped_key.is_none() || mapped_direction.is_none() {
@@ -91,6 +90,7 @@ fn send_key(
         return;
     }
     debug!("key {} state {}", key, state);
+    let mut app_state = app_state.lock().unwrap();
     app_state.enigo.key(mapped_key.unwrap(), mapped_direction.unwrap()).expect(
         "Should be able to send key");
 }
@@ -99,7 +99,6 @@ fn send_key(
 fn toggle_window(
         app_state: State<'_, Mutex<AppState>>,
         app_handle: tauri::AppHandle) {
-    let mut app_state = app_state.lock().unwrap();
     let win = app_handle.get_webview_window("main").unwrap();
     let is_visible = win.is_visible().expect(
         "should be able to check if window is visible");
@@ -111,6 +110,7 @@ fn toggle_window(
         debug!("minimizing window");
         win.hide().expect("Should be able to hide window");
     }
+    let mut app_state = app_state.lock().unwrap();
     match app_state.steam_pid {
         Some(steam_pid) => {
             send_steam_signal(steam_pid, is_visible);
@@ -170,6 +170,7 @@ async fn async_read_usb_hid_touchpad(app_handle: tauri::AppHandle) -> ! {
         .next().unwrap();
     debug!("device path: {:?}", device_info.path());
     let device = device_info.open_device(&api).unwrap();
+    disable_steam_watchdog(&device);
     loop {
         let mut buf = [0u8; 64];
         let res = device.read(&mut buf[..]).unwrap();
@@ -230,5 +231,24 @@ fn send_steam_signal(steam_pid: i32, is_visible: bool) {
     debug!("sending signal to steam process");
     unsafe {
         libc::kill(steam_pid, signal);
+    }
+}
+
+// Disable steam watchdog, so when pausing steam process
+// the steamdeck controller doesn't reset itself to default hid settings
+fn disable_steam_watchdog(device: &HidDevice) {
+    // see https://github.com/torvalds/linux/blob/master/drivers/hid/hid-steam.c
+    debug!("disabling steam watchdog");
+    let mut buf = [0u8; 5];
+    buf[0] = 0x87; // ID_SET_SETTINGS_VALUES
+    buf[1] = 3; // number of settings bytes (without first two)
+    buf[2] = 71; // SETTING_STEAM_WATCHDOG_ENABLE
+    buf[3] = 0;
+    buf[4] = 0;
+    match device.send_feature_report(&buf) {
+        Ok(_) => {},
+        Err(e) => {
+            error!("failed to write hid settings {}", e);
+        },
     }
 }
