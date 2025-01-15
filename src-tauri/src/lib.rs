@@ -2,6 +2,7 @@ extern crate hidapi;
 
 use std::{fs, sync::Mutex};
 
+use gtk::{gdk::WindowTypeHint, prelude::GtkWindowExt};
 use log::{debug, error, warn, info};
 
 use hidapi::{DeviceInfo, HidDevice};
@@ -100,6 +101,8 @@ fn toggle_window(
         app_state: State<'_, Mutex<AppState>>,
         app_handle: tauri::AppHandle) {
     let win = app_handle.get_webview_window("main").unwrap();
+    let gtk_window = win.gtk_window().unwrap();
+    gtk_window.set_type_hint(WindowTypeHint::Dock);
     let is_visible = win.is_visible().expect(
         "should be able to check if window is visible");
     debug!("toggling window");

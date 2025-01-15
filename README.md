@@ -14,4 +14,7 @@ This template should help get you started developing with Tauri in vanilla HTML,
 
 ### TODO
 
-- sometimes opened in background
+- initial sigstop
+- sticky keys, when released outside key
+- haptic feedback
+- layers

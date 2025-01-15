@@ -3863,6 +3863,7 @@ name = "virtual-keyboard-pad"
 version = "0.1.0"
 dependencies = [
  "enigo",
+ "gtk",
  "hidapi",
  "libc",
  "log",
