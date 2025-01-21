@@ -10,7 +10,7 @@ interface Area {
 
 const config = {
   cursor: {
-    forceThreshold: 3000,
+    forceThreshold: 2000,
     area: {
       left: {
         top: 0.4,
@@ -131,14 +131,19 @@ const keyboardLayout = {
 
 type KeyState = 'down' | 'up';
 
-async function sendKeys(x: number, y: number, state: KeyState) {
-  const elements = document.elementsFromPoint(x, y);
-  const keys = elements.filter(element => element.nodeName == 'KEYBOARD-KEY');
-  for (const key of keys) {
-    if (key instanceof KeyboardKey) {
-      await sendKey(key.key, state);
-    }
-  }
+class KeyboardState {
+
+  pressedLeftKeys: KeyboardKey[] = [];
+  pressedRightKeys: KeyboardKey[] = [];
+
+  hoveredLeftKeys: KeyboardKey[] = [];
+  hoveredRightKeys: KeyboardKey[] = [];
+}
+
+async function sendKeys(keys: KeyboardKey[], state: KeyState) {
+  keys.forEach(async key => {
+    await sendKey(key.key, state);
+  });
 }
 
 async function sendKey(key: string, state: KeyState) {
@@ -150,6 +155,10 @@ async function sendKey(key: string, state: KeyState) {
 
 async function toggleWindow() {
   return invoke('toggle_window');
+}
+
+async function triggerHapticPulse() {
+  return invoke('trigger_haptic_pulse')
 }
 
 class KeyboardKey extends HTMLElement {
@@ -251,6 +260,42 @@ function renderKeyboardLayoutElement(object: any): HTMLElement | undefined {
   }
 }
 
+function handleHoveredKeys(
+    keyboardState: KeyboardState,
+    leftKeys: KeyboardKey[],
+    rightKeys: KeyboardKey[]) {
+  // left
+  const releasedLeftKeys = keyboardState.hoveredLeftKeys.filter(
+    prevHovKey => leftKeys.indexOf(prevHovKey) < 0);
+  const newHoveredLeftKeys = leftKeys.filter(
+    newHovKey => keyboardState.hoveredLeftKeys.indexOf(newHovKey) < 0);
+  // right
+  const releasedRightKeys = keyboardState.hoveredRightKeys.filter(
+    prevHovKey => rightKeys.indexOf(prevHovKey) < 0);
+  const newHoveredRightKeys = rightKeys.filter(
+    newHovKey => keyboardState.hoveredRightKeys.indexOf(newHovKey) < 0);
+  [...newHoveredLeftKeys, ...newHoveredRightKeys].forEach((key) => {
+    console.log(`adding cursor-hover to ${key.key}`);
+    key.classList.add('cursor-hover');
+  });
+  [...releasedLeftKeys, ...releasedRightKeys].forEach((key) => {
+    console.log(`removing cursor-hover to ${key.key}`);
+    key.classList.remove('cursor-hover');
+  });
+  if (newHoveredLeftKeys.length != 0 || newHoveredRightKeys.length != 0) {
+    // if new keys are hovered/cursor moved to new key, send haptic feedback
+    triggerHapticPulse();
+  }
+  keyboardState.hoveredLeftKeys = leftKeys;
+  keyboardState.hoveredRightKeys = rightKeys;
+}
+
+function getKeys(x: number, y: number): KeyboardKey[] {
+  const elements = document.elementsFromPoint(x, y);
+  const keys = elements.filter(element => element.nodeName == 'KEYBOARD-KEY');
+  return keys.filter(key => key instanceof KeyboardKey);
+}
+
 interface SteamDeckDeviceReport {
     lPadX: number;
     lPadY: number;
@@ -283,23 +328,25 @@ function transform(x: number, y: number, area: Area): [number, number] {
 /**
  * Moves/hides/shows cursors depending on input.
  * 
+ * @param keyboardState information about current state of the keyboard
  * @param input current input
  * @param lastInput input from last frame/tick
  * @param leftCursor left cursor for left touchpad
  * @param rightCursor right cursor for right touchpad
  */
 async function handleTouchpads(
+    keyboardState: KeyboardState,
     input: SteamDeckDeviceReport,
     lastInput: SteamDeckDeviceReport,
     leftCursor: HTMLElement,
     rightCursor: HTMLElement) {
-  let lPadVisible = input.lPadX != 0 || input.lPadY != 0;
-  let rPadVisible = input.rPadX != 0 || input.rPadY != 0;
+  let lPadTouched = input.lPadX != 0 || input.lPadY != 0;
+  let rPadTouched = input.rPadX != 0 || input.rPadY != 0;
   let leftCursorX = 0;
   let leftCursorY = 0;
   let rightCursorX = 0;
   let rightCursorY = 0;
-  if (lPadVisible) {
+  if (lPadTouched) {
     leftCursor.classList.remove('hidden');
     [leftCursorX, leftCursorY] = transform(input.lPadX, input.lPadY, config.cursor.area.left);
     leftCursor.style.top = (leftCursorY - cursorSize / 2) + 'px';
@@ -307,7 +354,7 @@ async function handleTouchpads(
   } else {
     leftCursor?.classList.add('hidden');
   }
-  if (rPadVisible) {
+  if (rPadTouched) {
     rightCursor.classList.remove('hidden');
     [rightCursorX, rightCursorY] = transform(input.rPadX, input.rPadY, config.cursor.area.right);
     rightCursor.style.top = (rightCursorY - cursorSize / 2) + 'px';
@@ -315,19 +362,42 @@ async function handleTouchpads(
   } else {
     rightCursor?.classList.add('hidden');
   }
+  if (input.lPadForce !== 0) {
+    console.log(input.lPadForce);
+  }
+  if (input.rPadForce !== 0) {
+    console.log(input.rPadForce);
+  }
+  let leftKeys: KeyboardKey[] = [];
+  if (lPadTouched) {
+    leftKeys = getKeys(leftCursorX, leftCursorY);
+  }
+  let rightKeys: KeyboardKey[] = [];
+  if (rPadTouched) {
+    rightKeys = getKeys(rightCursorX, rightCursorY);
+  }
+  handleHoveredKeys(keyboardState, leftKeys, rightKeys);
   if (lastInput.lPadForce < config.cursor.forceThreshold
       && input.lPadForce > config.cursor.forceThreshold) {
-    sendKeys(leftCursorX, leftCursorY, 'down');
+    sendKeys(leftKeys, 'down');
+    keyboardState.pressedLeftKeys = leftKeys;
+    leftKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.lPadForce > config.cursor.forceThreshold
       && input.lPadForce < config.cursor.forceThreshold) {
-    sendKeys(leftCursorX, leftCursorY, 'up');
+    leftKeys.forEach(key => key.classList.remove('pressed'));
+    sendKeys(keyboardState.pressedLeftKeys, 'up');
+    keyboardState.pressedLeftKeys = [];
   }
   if (lastInput.rPadForce < config.cursor.forceThreshold
       && input.rPadForce > config.cursor.forceThreshold) {
-    sendKeys(rightCursorX, rightCursorY, 'down');
+    sendKeys(rightKeys, 'down');
+    keyboardState.pressedRightKeys = rightKeys;
+    rightKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.rPadForce > config.cursor.forceThreshold
       && input.rPadForce < config.cursor.forceThreshold) {
-    sendKeys(rightCursorX, rightCursorY, 'up');
+    rightKeys.forEach(key => key.classList.remove('pressed'));
+    sendKeys(keyboardState.pressedRightKeys, 'up');
+    keyboardState.pressedRightKeys = [];
   }
 }
 
@@ -346,6 +416,7 @@ window.addEventListener('DOMContentLoaded', () => {
     throw Error('Right cursor html element missing');
   }
   let lastInput: SteamDeckDeviceReport | undefined = undefined;
+  let keyboardState = new KeyboardState();
   // setInterval(() => {
   //   if (lastInput == null) {
   //     return;
@@ -363,7 +434,12 @@ window.addEventListener('DOMContentLoaded', () => {
     if (input.l4 && !lastInput.l4) {
       toggleWindow();
     }
-    handleTouchpads(input, lastInput, leftCursor, rightCursor);
+    handleTouchpads(
+      keyboardState,
+      input,
+      lastInput,
+      leftCursor,
+      rightCursor);
     lastInput = input;
   });
 });

@@ -1,6 +1,7 @@
 extern crate hidapi;
 
 use std::{fs, sync::Mutex};
+use std::sync::mpsc::{self, Sender};
 
 use gtk::{gdk::WindowTypeHint, prelude::GtkWindowExt};
 use log::{debug, error, warn, info};
@@ -30,6 +31,8 @@ struct AppState {
     enigo: Enigo,
     is_open: bool,
     steam_pid: Option<i32>,
+    pause_tx: Sender<bool>,
+    trigger_haptic_tx: Sender<()>,
 }
 
 static KEY_MAP: &[(&str, Key)] = &[
@@ -84,6 +87,7 @@ fn send_key(
         app_state: State<'_, Mutex<AppState>>,
         key: &str,
         state: &str) {
+    println!("sending key {key}");
     let mapped_key = map_key(key);
     let mapped_direction = map_state(state);
     if mapped_key.is_none() || mapped_direction.is_none() {
@@ -113,7 +117,13 @@ fn toggle_window(
         debug!("minimizing window");
         win.hide().expect("Should be able to hide window");
     }
+    // pause/resume steam client/process
     let mut app_state = app_state.lock().unwrap();
+    if !is_visible {
+        app_state.pause_tx.send(false).unwrap();
+    } else {
+        app_state.pause_tx.send(true).unwrap();
+    }
     match app_state.steam_pid {
         Some(steam_pid) => {
             send_steam_signal(steam_pid, is_visible);
@@ -121,20 +131,40 @@ fn toggle_window(
         None => {},
     }
     app_state.is_open = !is_visible;
+    // release all modifier
+    app_state.enigo.key(Key::Shift, Direction::Release).expect(
+        "Should be able to release shift key");
+    app_state.enigo.key(Key::Alt, Direction::Release).expect(
+        "Should be able to release alt key");
+    app_state.enigo.key(Key::Control, Direction::Release).expect(
+        "Should be able to release control key");
+    app_state.enigo.key(Key::Meta, Direction::Release).expect(
+        "Should be able to release meta key");
+}
+
+#[tauri::command]
+fn trigger_haptic_pulse(app_state: State<'_, Mutex<AppState>>) {
+    let app_state = app_state.lock().unwrap();
+    app_state.trigger_haptic_tx.send(()).unwrap();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    env_logger::init();
     tauri::Builder::default()
         .setup(|app| {
             let steam_pid = get_steam_pid();
+            let (pause_tx, pause_rx) = mpsc::channel::<bool>();
+            let (trigger_haptic_tx, trigger_haptic_rx) = mpsc::channel::<>();
             app.manage(Mutex::new(AppState {
                 enigo: Enigo::new(&Settings::default()).unwrap(),
                 is_open: true,
                 steam_pid: steam_pid,
+                pause_tx: pause_tx,
+                trigger_haptic_tx: trigger_haptic_tx,
             }));
             match steam_pid {
-                Some(steam_pid) => send_steam_signal(steam_pid, true),
+                Some(steam_pid) => send_steam_signal(steam_pid, false),
                 None => {},
             };
             let win = app.get_webview_window("main").unwrap();
@@ -143,20 +173,25 @@ pub fn run() {
             win.set_always_on_top(true).expect(
                 "Should be able to set always on top");
             let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async_read_usb_hid_touchpad(app_handle));
+            tauri::async_runtime::spawn(async_read_usb_hid_touchpad(
+                app_handle, pause_rx, trigger_haptic_rx));
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             send_key,
-            toggle_window
+            toggle_window,
+            trigger_haptic_pulse,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 // read hid device and send messages to js frontend
-async fn async_read_usb_hid_touchpad(app_handle: tauri::AppHandle) -> ! {
+async fn async_read_usb_hid_touchpad(
+        app_handle: tauri::AppHandle,
+        pause_rx: mpsc::Receiver<bool>,
+        trigger_haptic_rx: mpsc::Receiver<()>) -> ! {
     let api = hidapi::HidApi::new().unwrap();
     for device in api.device_list() {
         debug!("device: {:#?}, path:{:?}, vendor id: {}, product id: {}",
@@ -174,7 +209,42 @@ async fn async_read_usb_hid_touchpad(app_handle: tauri::AppHandle) -> ! {
     debug!("device path: {:?}", device_info.path());
     let device = device_info.open_device(&api).unwrap();
     disable_steam_watchdog(&device);
+    let mut pause = false;
     loop {
+        // pause flag
+        match pause_rx.try_recv() {
+            Ok(message_pause) => {
+                debug!("[HID thread] new pause flag: {}", message_pause);
+                pause = message_pause;
+            },
+            Err(_) => {},
+        };
+        // haptic
+        match trigger_haptic_rx.try_recv() {
+            Ok(()) => {
+                let mut haptic_report = [0u8; 12];
+                haptic_report[0] = 0;
+                haptic_report[1] = 0x8F; // ID_TRIGGER_HAPTIC_PULSE
+                haptic_report[2] = 8; // next bytes count/size
+                haptic_report[3] = 2; // 0 = right, 1 = left, 2 = both
+                haptic_report[4] = 0xff; // duration lower byte
+                haptic_report[5] = 0xff; // duration upper byte
+                haptic_report[6] = 0x00; // interval lower byte
+                haptic_report[7] = 0x00; // interval upper byte
+                haptic_report[8] = 0x01; // count lower byte
+                haptic_report[9] = 0x00; // count upper byte
+                haptic_report[10] = 0xff; // gain
+                match device.send_feature_report(&mut haptic_report) {
+                    Ok(_) => {},
+                    Err(_) => {
+                        debug!("Failed to send hid feature report for haptic");
+                    },
+                }
+                debug!("Doing haptics now");
+            },
+            Err(_) => {},
+        }
+        // input
         let mut buf = [0u8; 64];
         let res = device.read(&mut buf[..]).unwrap();
         if res != 64 {
@@ -190,8 +260,11 @@ async fn async_read_usb_hid_touchpad(app_handle: tauri::AppHandle) -> ! {
             r_pad_force: u16::from_le_bytes(buf[58..60].try_into().unwrap()),
             l4: (u32::from_le_bytes(buf[12..16].try_into().unwrap()) & 0x200) > 0,
         };
-        app_handle.emit("input", device_report).expect(
-            "Should be able to emit device report");
+        // TODO: logic to reenable
+        if !pause {
+            app_handle.emit("input", device_report).expect(
+                "Should be able to emit device report");
+        }
     }
 }
 
