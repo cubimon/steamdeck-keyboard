@@ -157,8 +157,10 @@ async function toggleWindow() {
   return invoke('toggle_window');
 }
 
-async function triggerHapticPulse() {
-  return invoke('trigger_haptic_pulse')
+async function triggerHapticPulse(pad: number) {
+  return invoke('trigger_haptic_pulse', {
+    pad: pad
+  });
 }
 
 class KeyboardKey extends HTMLElement {
@@ -282,9 +284,12 @@ function handleHoveredKeys(
     console.log(`removing cursor-hover to ${key.key}`);
     key.classList.remove('cursor-hover');
   });
-  if (newHoveredLeftKeys.length != 0 || newHoveredRightKeys.length != 0) {
-    // if new keys are hovered/cursor moved to new key, send haptic feedback
-    triggerHapticPulse();
+  // if new keys are hovered/cursor moved to new key, send haptic feedback
+  if (newHoveredLeftKeys.length != 0) {
+    triggerHapticPulse(1);
+  }
+  if (newHoveredRightKeys.length != 0) {
+    triggerHapticPulse(0);
   }
   keyboardState.hoveredLeftKeys = leftKeys;
   keyboardState.hoveredRightKeys = rightKeys;
@@ -417,14 +422,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   let lastInput: SteamDeckDeviceReport | undefined = undefined;
   let keyboardState = new KeyboardState();
-  // setInterval(() => {
-  //   if (lastInput == null) {
-  //     return;
-  //   }
-  //   let [left, top] = transform(lastInput.lPadX, lastInput.lPadY, config.cursor.area.left);
-  //   console.log(`left/top transformed: ${left} ${top}`);
-  //   console.log(`left/top input: ${lastInput.lPadX} ${lastInput.lPadY}`);
-  // }, 5000);
   listen('input', async (event: { payload: SteamDeckDeviceReport }) => {
     let input = event.payload;
     if (!lastInput) {
