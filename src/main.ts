@@ -153,10 +153,6 @@ async function sendKey(key: string, state: KeyState) {
   });
 }
 
-async function toggleWindow() {
-  return invoke('toggle_window');
-}
-
 async function triggerHapticPulse(pad: number) {
   return invoke('trigger_haptic_pulse', {
     pad: pad
@@ -427,9 +423,6 @@ window.addEventListener('DOMContentLoaded', () => {
     if (!lastInput) {
       lastInput = input;
       return;
-    }
-    if (input.l4 && !lastInput.l4) {
-      toggleWindow();
     }
     handleTouchpads(
       keyboardState,

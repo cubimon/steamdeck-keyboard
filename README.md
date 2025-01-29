@@ -14,9 +14,11 @@ This template should help get you started developing with Tauri in vanilla HTML,
 
 ### TODO
 
-- better shortcut handling from rust/reduce background cpu
 - press once to keep holding for next key
 - layers
 - press x times fast to hold?
-- haptic feedback - smoothen on border
+- haptic feedback - smoothen on border, configure/disable
+- remove pause channel, since pause related everything is done on rust side/hid thread
+- hid thread separate file
+- restructure ts
 
