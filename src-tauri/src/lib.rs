@@ -1,7 +1,7 @@
 extern crate hidapi;
 
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Instant};
 use std::{fs, sync::Mutex};
 use std::sync::mpsc::{self, Sender};
 
@@ -22,6 +22,13 @@ struct TouchEntry {
     force: u16,
     time: Instant,
 }
+
+impl TouchEntry {
+    fn is_touched(&self) -> bool {
+        return self.x != 0 || self.y != 0;
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SteamDeckDeviceReport {
@@ -109,7 +116,7 @@ fn send_key(
 #[tauri::command]
 fn toggle_window(
         app_state: State<'_, Mutex<AppState>>,
-        app_handle: tauri::AppHandle) {
+        app_handle: tauri::AppHandle) -> bool {
     let win = app_handle.get_webview_window("main").unwrap();
     let gtk_window = win.gtk_window().unwrap();
     gtk_window.set_type_hint(WindowTypeHint::Dock);
@@ -145,6 +152,7 @@ fn toggle_window(
         "Should be able to release control key");
     app_state.enigo.key(Key::Meta, Direction::Release).expect(
         "Should be able to release meta key");
+    return !is_visible;
 }
 
 #[tauri::command]
@@ -219,6 +227,8 @@ async fn async_read_usb_hid_touchpad(
     let device = device_info.open_device(&api).unwrap();
     disable_steam_watchdog(&device);
     let mut pause = false;
+    let mut is_visible = true;
+    let mut last_read = Instant::now();
     loop {
         // pause flag
         match pause_rx.try_recv() {
@@ -261,6 +271,10 @@ async fn async_read_usb_hid_touchpad(
             continue;
         }
         let now = Instant::now();
+        if pause && (now - last_read).as_millis() < 50 {
+            continue;
+        }
+        last_read = now;
         let device_report = SteamDeckDeviceReport {
             l_pad_x: i16::from_le_bytes(buf[16..18].try_into().unwrap()),
             l_pad_y: i16::from_le_bytes(buf[18..20].try_into().unwrap()),
@@ -306,11 +320,15 @@ async fn async_read_usb_hid_touchpad(
             }
             break;
         }
-        if check_keyboard_toggle(&left_touch_history, &right_touch_history, last_toggle_window) {
+        if check_keyboard_toggle(
+                &left_touch_history,
+                &right_touch_history,
+                last_toggle_window,
+                is_visible) {
             debug!("[HID thread] toggle window");
             last_toggle_window = Instant::now();
             let state = app_handle.state::<Mutex<AppState>>();
-            toggle_window(state, app_handle.clone());
+            is_visible = toggle_window(state, app_handle.clone());
         }
         trace!("[HID thread] \
             left touch history size {}, \
@@ -326,15 +344,30 @@ async fn async_read_usb_hid_touchpad(
 fn check_keyboard_toggle(
         left_touch_history: &VecDeque<TouchEntry>,
         right_touch_history: &VecDeque<TouchEntry>,
-        last_toggle_window: Instant) -> bool {
+        last_toggle_window: Instant,
+        is_visible: bool) -> bool {
+    if left_touch_history.len() == 0 || right_touch_history.len() == 0 {
+        trace!("left or right touch history is empty");
+        return false;
+    }
+    let last_left_touch = left_touch_history.back().unwrap();
+    let last_right_touch = right_touch_history.back().unwrap();
+    let is_left_touched = last_left_touch.is_touched();
+    let is_right_touched = last_right_touch.is_touched();
+    if is_visible && (!is_left_touched || !is_right_touched) {
+        debug!("Visible and one touchpad released, closing keyboard");
+        return true;
+    }
     let left_touch_time = get_last_touch_start_time(left_touch_history);
     let right_touch_time = get_last_touch_start_time(right_touch_history);
     if left_touch_time.is_none() || right_touch_time.is_none() {
+        trace!("left or right isn't touched");
         return false;
     }
     let left_touch_time = left_touch_time.unwrap();
     let right_touch_time = right_touch_time.unwrap();
     if left_touch_time < last_toggle_window || right_touch_time < last_toggle_window {
+        trace!("touch time before last toggle");
         return false;
     }
     let time_diff = if left_touch_time > right_touch_time {
@@ -355,12 +388,12 @@ fn get_last_touch_start_time(touch_history: &VecDeque<TouchEntry>) -> Option<Ins
     if touch_history.is_empty() {
         return None;
     }
-    let mut prev = touch_history.back().unwrap();
-    for curr in touch_history.iter() {
-        if curr.force > 0 && prev.force == 0 {
+    let mut curr = touch_history.back().unwrap();
+    for prev in touch_history.iter().rev() {
+        if curr.is_touched() && !prev.is_touched() {
             return Some(curr.time);
         }
-        prev = curr;
+        curr = prev;
     }
     return None;
 }

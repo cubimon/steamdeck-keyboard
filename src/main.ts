@@ -95,7 +95,7 @@ const keyboardLayout = {
     {
       'type': 'row',
       'elements': [
-        { key: 'shift', label: 'Shift', size: 'u2_25' },
+        { key: 'shift', label: 'Shift', size: 'u2_25', osm: true },
         { key: 'z', label: 'Z' },
         { key: 'x', label: 'X' },
         { key: 'c', label: 'C' },
@@ -106,7 +106,7 @@ const keyboardLayout = {
         { key: ',' },
         { key: '.' },
         { key: '/' },
-        { key: 'shift', label: 'Shift', size: 'u1_75' },
+        { key: 'shift', label: 'Shift', size: 'u1_75', osm: true },
         { key: 'up_arrow', label: '⬆️' },
         { key: 'page_down', label: 'Pgdn' }
       ]
@@ -114,11 +114,11 @@ const keyboardLayout = {
     {
       'type': 'row',
       'elements': [
-        { key: 'control', label: 'Ctrl', size: 'u1_25' },
-        { key: 'super', size: 'u1_25' },
-        { key: 'alt', label: 'Alt', size: 'u1_25' },
+        { key: 'control', label: 'Ctrl', size: 'u1_25', osm: true },
+        { key: 'super', size: 'u1_25', osm: true },
+        { key: 'alt', label: 'Alt', size: 'u1_25', osm: true },
         { key: 'space', label: '', size: 'u6_25' },
-        { key: 'alt', label: 'Alt' },
+        { key: 'alt', label: 'Alt', osm: true },
         { key: null, label: '' },
         { key: null, label: '' },
         { key: 'left_arrow', label: '⬅️' },
@@ -138,18 +138,78 @@ class KeyboardState {
 
   hoveredLeftKeys: KeyboardKey[] = [];
   hoveredRightKeys: KeyboardKey[] = [];
+
+  heldOsmKeys: KeyboardKey[] = [];
+
+  isOsmShifted(): boolean {
+    for (let heldOsmKey of this.heldOsmKeys) {
+      if (heldOsmKey.isShift()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  isShifted(): boolean {
+    if (this.isOsmShifted()) {
+      return true;
+    }
+    for (let pressedLeftKey of this.pressedLeftKeys) {
+      if (pressedLeftKey.isShift()) {
+        return true;
+      }
+    }
+    for (let pressedLeftKey of this.pressedLeftKeys) {
+      if (pressedLeftKey.isShift()) {
+        return true;
+      }
+    }
+    return false;
+  }
 }
 
-async function sendKeys(keys: KeyboardKey[], state: KeyState) {
+async function keyStateChanges(
+    keyboardState: KeyboardState,
+    keys: KeyboardKey[],
+    state: KeyState) {
   keys.forEach(async key => {
-    await sendKey(key.key, state);
+    await keyStateChange(
+      keyboardState, key, state);
   });
 }
 
-async function sendKey(key: string, state: KeyState) {
+async function keyStateChange(
+    keyboardState: KeyboardState,
+    key: KeyboardKey,
+    state: KeyState) {
+  if (key.osm && keyboardState.heldOsmKeys.includes(key)) {
+    return;
+  }
+  let result;
+  if (!key.osm || (key.osm && state == 'down')) {
+    let keyChar = key.key;
+    if (keyboardState.isShifted()) {
+      keyChar = keyChar.toUpperCase();
+    }
+    result = sendKey(keyChar, state);
+  }
+  if (key.osm) {
+    keyboardState.heldOsmKeys.push(key);
+  } else if (keyboardState.heldOsmKeys.length > 0) {
+    keyboardState.heldOsmKeys.forEach(heldOsmKey => {
+      sendKey(heldOsmKey.key, 'up');
+    });
+    keyboardState.heldOsmKeys = [];
+  }
+  return result;
+}
+
+async function sendKey(
+    key: string,
+    state: KeyState) {
   return invoke('send_key', {
     key: key,
-    state: state
+    state: state,
   });
 }
 
@@ -162,23 +222,37 @@ async function triggerHapticPulse(pad: number) {
 class KeyboardKey extends HTMLElement {
 
   button?: HTMLElement;
+  keyboardState: KeyboardState;
   key: string;
   label: string;
+  osm: boolean;
 
-  constructor(key: string, label: string) {
+  constructor(
+      keyboardState: KeyboardState,
+      key: string,
+      label: string,
+      osm: boolean) {
     super();
+    this.keyboardState = keyboardState;
     this.key = key;
     this.label = label ?? key;
+    this.osm = osm ?? false;
     this.addEventListener('mousedown', this.onMouseDown.bind(this));
     this.addEventListener('mouseup', this.onMouseUp.bind(this));
   }
 
   async onMouseDown() {
-    await sendKey(this.key, 'down');
+    await keyStateChange(
+      this.keyboardState,
+      this,
+      'down');
   }
 
   async onMouseUp() {
-    await sendKey(this.key, 'up');
+    await keyStateChange(
+      this.keyboardState,
+      this,
+      'up');
   }
 
   connectedCallback() {
@@ -189,6 +263,10 @@ class KeyboardKey extends HTMLElement {
 
   disconnectedCallback() {
     this.innerHTML = '';
+  }
+
+  isShift(): boolean {
+    return this.key === 'shift';
   }
 }
 
@@ -206,8 +284,14 @@ function isLayout(object: any) {
   return ['row', 'column'].includes(object?.type) && Array.isArray(object?.elements);
 }
 
-function renderKey(object: any): HTMLElement {
-  const result = new KeyboardKey(object?.key, object?.label);
+function renderKey(
+    keyboardState: KeyboardState,
+    object: any): HTMLElement {
+  const result = new KeyboardKey(
+    keyboardState,
+    object?.key,
+    object?.label,
+    object?.osm);
   result.classList.add(object?.key);
   result.classList.add('key');
   if (object?.size) {
@@ -221,11 +305,14 @@ function renderKey(object: any): HTMLElement {
   return result;
 }
 
-function renderRowLayout(object: any): HTMLElement {
+function renderRowLayout(
+    keyboardState: KeyboardState,
+    object: any): HTMLElement {
   const result = document.createElement('div');
   result.className = 'row';
   for (const element of object?.elements ?? []) {
-    const renderedElement = renderKeyboardLayoutElement(element)
+    const renderedElement = renderKeyboardLayoutElement(
+      keyboardState, element)
     if (renderedElement) {
       result.appendChild(renderedElement);
     }
@@ -233,11 +320,14 @@ function renderRowLayout(object: any): HTMLElement {
   return result;
 }
 
-function renderColumnLayout(object: any): HTMLElement {
+function renderColumnLayout(
+    keyboardState: KeyboardState,
+    object: any): HTMLElement {
   const result = document.createElement('div');
   result.className = 'column';
   for (const element of object?.elements ?? []) {
-    const renderedElement = renderKeyboardLayoutElement(element)
+    const renderedElement = renderKeyboardLayoutElement(
+      keyboardState, element)
     if (renderedElement) {
       result.appendChild(renderedElement);
     }
@@ -245,15 +335,19 @@ function renderColumnLayout(object: any): HTMLElement {
   return result;
 }
 
-function renderKeyboardLayoutElement(object: any): HTMLElement | undefined {
+function renderKeyboardLayoutElement(
+    keyboardState: KeyboardState,
+    object: any): HTMLElement | undefined {
   if (isKey(object)) {
-    return renderKey(object);
+    return renderKey(keyboardState, object);
   }
   if (isLayout(object)) {
     if (object.type === 'row') {
-      return renderRowLayout(object);
+      return renderRowLayout(
+        keyboardState, object);
     } else if (object.type === 'column') {
-      return renderColumnLayout(object);
+      return renderColumnLayout(
+        keyboardState, object);
     }
   }
 }
@@ -273,11 +367,9 @@ function handleHoveredKeys(
   const newHoveredRightKeys = rightKeys.filter(
     newHovKey => keyboardState.hoveredRightKeys.indexOf(newHovKey) < 0);
   [...newHoveredLeftKeys, ...newHoveredRightKeys].forEach((key) => {
-    console.log(`adding cursor-hover to ${key.key}`);
     key.classList.add('cursor-hover');
   });
   [...releasedLeftKeys, ...releasedRightKeys].forEach((key) => {
-    console.log(`removing cursor-hover to ${key.key}`);
     key.classList.remove('cursor-hover');
   });
   // if new keys are hovered/cursor moved to new key, send haptic feedback
@@ -363,12 +455,6 @@ async function handleTouchpads(
   } else {
     rightCursor?.classList.add('hidden');
   }
-  if (input.lPadForce !== 0) {
-    console.log(input.lPadForce);
-  }
-  if (input.rPadForce !== 0) {
-    console.log(input.rPadForce);
-  }
   let leftKeys: KeyboardKey[] = [];
   if (lPadTouched) {
     leftKeys = getKeys(leftCursorX, leftCursorY);
@@ -380,31 +466,33 @@ async function handleTouchpads(
   handleHoveredKeys(keyboardState, leftKeys, rightKeys);
   if (lastInput.lPadForce < config.cursor.forceThreshold
       && input.lPadForce > config.cursor.forceThreshold) {
-    sendKeys(leftKeys, 'down');
+    keyStateChanges(keyboardState, leftKeys, 'down');
     keyboardState.pressedLeftKeys = leftKeys;
     leftKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.lPadForce > config.cursor.forceThreshold
       && input.lPadForce < config.cursor.forceThreshold) {
     leftKeys.forEach(key => key.classList.remove('pressed'));
-    sendKeys(keyboardState.pressedLeftKeys, 'up');
+    keyStateChanges(keyboardState, keyboardState.pressedLeftKeys, 'up');
     keyboardState.pressedLeftKeys = [];
   }
   if (lastInput.rPadForce < config.cursor.forceThreshold
       && input.rPadForce > config.cursor.forceThreshold) {
-    sendKeys(rightKeys, 'down');
+    keyStateChanges(keyboardState, rightKeys, 'down');
     keyboardState.pressedRightKeys = rightKeys;
     rightKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.rPadForce > config.cursor.forceThreshold
       && input.rPadForce < config.cursor.forceThreshold) {
     rightKeys.forEach(key => key.classList.remove('pressed'));
-    sendKeys(keyboardState.pressedRightKeys, 'up');
+    keyStateChanges(keyboardState, keyboardState.pressedRightKeys, 'up');
     keyboardState.pressedRightKeys = [];
   }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   const body = document.querySelector('body');
-  const renderedKeyboardLayout = renderKeyboardLayoutElement(keyboardLayout);
+  let keyboardState = new KeyboardState();
+  const renderedKeyboardLayout = renderKeyboardLayoutElement(
+    keyboardState, keyboardLayout);
   if (renderedKeyboardLayout) {
     body?.appendChild(renderedKeyboardLayout);
   }
@@ -417,7 +505,6 @@ window.addEventListener('DOMContentLoaded', () => {
     throw Error('Right cursor html element missing');
   }
   let lastInput: SteamDeckDeviceReport | undefined = undefined;
-  let keyboardState = new KeyboardState();
   listen('input', async (event: { payload: SteamDeckDeviceReport }) => {
     let input = event.payload;
     if (!lastInput) {
