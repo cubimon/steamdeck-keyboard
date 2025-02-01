@@ -369,8 +369,8 @@ fn check_keyboard_toggle(
     let last_right_touch = right_touch_history.back().unwrap();
     let is_left_touched = last_left_touch.is_touched();
     let is_right_touched = last_right_touch.is_touched();
-    if is_visible && (!is_left_touched || !is_right_touched) {
-        debug!("Visible and one touchpad released, closing keyboard");
+    if is_visible && (!is_left_touched && !is_right_touched) {
+        debug!("Visible and both touchpads released, closing keyboard");
         return true;
     }
     let left_touch_time = get_last_touch_start_time(left_touch_history);
