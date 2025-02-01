@@ -1,12 +1,13 @@
 extern crate hidapi;
 
 use std::collections::VecDeque;
-use std::time::{Instant};
+use std::str::FromStr;
+use std::time::Instant;
 use std::{fs, sync::Mutex};
 use std::sync::mpsc::{self, Sender};
 
 use gtk::{gdk::WindowTypeHint, prelude::GtkWindowExt};
-use log::{debug, error, warn, info, trace};
+use log::{debug, error, info, log, trace, warn, Level};
 
 use hidapi::{DeviceInfo, HidDevice};
 use serde::Serialize;
@@ -69,6 +70,7 @@ static KEY_MAP: &[(&str, Key)] = &[
     ("right_arrow", Key::RightArrow),
     ("escape", Key::Escape),
     ("space", Key::Space),
+    ("tab", Key::Tab),
 ];
 
 fn map_key(key: &str) -> Option<Key> {
@@ -163,6 +165,18 @@ fn trigger_haptic_pulse(
     app_state.trigger_haptic_tx.send(pad).unwrap();
 }
 
+#[tauri::command]
+fn log(level: &str, message: &str) {
+    let level = match(Level::from_str(level)) {
+        Ok(level) => level,
+        Err(_) => {
+            warn!("Invalid log level from js {}", level);
+            Level::Debug
+        }
+    };
+    log!(level, "{}", message);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -196,6 +210,7 @@ pub fn run() {
             send_key,
             toggle_window,
             trigger_haptic_pulse,
+            log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
