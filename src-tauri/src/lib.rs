@@ -2,7 +2,8 @@ extern crate hidapi;
 
 use std::collections::VecDeque;
 use std::str::FromStr;
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use std::{fs, sync::Mutex};
 use std::sync::mpsc::{self, Sender};
 
@@ -167,7 +168,7 @@ fn trigger_haptic_pulse(
 
 #[tauri::command]
 fn log(level: &str, message: &str) {
-    let level = match(Level::from_str(level)) {
+    let level = match Level::from_str(level) {
         Ok(level) => level,
         Err(_) => {
             warn!("Invalid log level from js {}", level);
@@ -224,22 +225,7 @@ async fn async_read_usb_hid_touchpad(
     let mut left_touch_history: VecDeque<TouchEntry> = VecDeque::new();
     let mut right_touch_history: VecDeque<TouchEntry> = VecDeque::new();
     let mut last_toggle_window: Instant = Instant::now();
-    let api = hidapi::HidApi::new().unwrap();
-    for device in api.device_list() {
-        debug!("[HID thread] device: {:#?}, path:{:?}, vendor id: {}, product id: {}",
-            device,
-            device.path(),
-            device.vendor_id(),
-            device.product_id());
-    }
-    let (vid, pid) = (0x28de, 0x1205);
-    let device_info = api.device_list()
-        .filter(|device_info: &&DeviceInfo| device_info.vendor_id() == vid)
-        .filter(|device_info| device_info.product_id() == pid)
-        .filter(|device_info| device_info.interface_number() == 2)
-        .next().unwrap();
-    debug!("[HID thread] device path: {:?}", device_info.path());
-    let device = device_info.open_device(&api).unwrap();
+    let mut device = hid_device_factory().unwrap();
     disable_steam_watchdog(&device);
     let mut pause = false;
     let mut is_visible = true;
@@ -280,7 +266,20 @@ async fn async_read_usb_hid_touchpad(
         }
         // input
         let mut buf = [0u8; 64];
-        let res = device.read(&mut buf[..]).unwrap();
+        let res = match device.read(&mut buf[..]) {
+            Ok(res) => res,
+            Err(_) => {
+                warn!("Failed to read device, reopening after short delay");
+                sleep(Duration::from_millis(1000));
+                device = match hid_device_factory() {
+                    Some(device) => device,
+                    None => {
+                        continue;
+                    }
+                };
+                continue;
+            }
+        };
         if res != 64 {
             error!("USB hid response size wasn't 64 but {}", res);
             continue;
@@ -356,6 +355,32 @@ async fn async_read_usb_hid_touchpad(
     }
 }
 
+fn hid_device_factory() -> Option<HidDevice> {
+    let api = hidapi::HidApi::new().unwrap();
+    for device in api.device_list() {
+        debug!("[HID thread] device: {:#?}, path:{:?}, vendor id: {}, product id: {}",
+            device,
+            device.path(),
+            device.vendor_id(),
+            device.product_id());
+    }
+    let (vid, pid) = (0x28de, 0x1205);
+    let device_info_opt = api.device_list()
+        .filter(|device_info: &&DeviceInfo| device_info.vendor_id() == vid)
+        .filter(|device_info| device_info.product_id() == pid)
+        .filter(|device_info| device_info.interface_number() == 2)
+        .next();
+    if device_info_opt.is_none() {
+        return None;
+    }
+    let device_info = device_info_opt.unwrap();
+    debug!("[HID thread] device path: {:?}", device_info.path());
+    return match device_info.open_device(&api) {
+        Ok(device) => Some(device),
+        Err(_) => None,
+    };
+}
+
 fn check_keyboard_toggle(
         left_touch_history: &VecDeque<TouchEntry>,
         right_touch_history: &VecDeque<TouchEntry>,
@@ -391,9 +416,9 @@ fn check_keyboard_toggle(
         right_touch_time - left_touch_time
     };
     let time_diff = time_diff.as_millis();
-    debug!("time difference {}", time_diff);
+    trace!("time difference {}", time_diff);
     if time_diff < 100 {
-        debug!("time difference below threshold");
+        trace!("time difference below threshold");
         return true;
     }
     return false;
