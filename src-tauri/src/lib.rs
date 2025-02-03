@@ -78,8 +78,9 @@ fn map_key(key: &str) -> Option<Key> {
     if key.len() == 1 {
         return Some(Key::Unicode(key.chars().next().unwrap()));
     }
+    let key_lowercase = key.to_lowercase();
     for mapping in KEY_MAP {
-        if mapping.0 == key {
+        if mapping.0 == key_lowercase {
             return Some(mapping.1);
         }
     }

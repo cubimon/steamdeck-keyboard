@@ -14,9 +14,9 @@ This template should help get you started developing with Tauri in vanilla HTML,
 
 ### TODO
 
-- press x times fast to hold? until next single press?
+- config file/steam pid from config, keyboard layout/settings from config file
 - layers
-- haptic feedback - smoothen on border, configure/disable
+- haptic feedback - smoothen on border, configure/disable, padding on keyboard key?
 - remove pause channel, since pause related everything is done on rust side/hid thread
 - hid thread separate file
 - restructure ts

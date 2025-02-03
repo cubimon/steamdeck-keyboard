@@ -328,23 +328,33 @@ class KeyboardKey extends HTMLElement {
       state: KeyState,
       _now: Date) {
     let keyChar = this.key;
-    if (this.keyboardState.isShifted()) {
+    if (this.keyboardState.isShifted() && keyChar.length == 1) {
+      // to upper case single characters if shifted
+      // e.g. 'l' to 'L' or 'i' to 'I'
       keyChar = keyChar.toUpperCase();
     }
     return sendKey(keyChar, state);
   }
 }
 
+enum OsmState {
+  RELEASED,
+  SINGLE_HOLD,
+  DOUBLE_HOLD,
+};
+
 class KeyboardKeyOsm extends KeyboardKey {
 
-  isHeld: boolean;
+  state: OsmState;
+  stateStartTime: Date;
 
   constructor(
       keyboardState: KeyboardState,
       key: string,
       label: string) {
     super(keyboardState, key, label);
-    this.isHeld = false;
+    this.state = OsmState.RELEASED;
+    this.stateStartTime = new Date();
     this.keyboardState.subscribeAfterKeyStateChange(
       this.afterKeyStateChange.bind(this));
   }
@@ -356,9 +366,10 @@ class KeyboardKeyOsm extends KeyboardKey {
     if (key instanceof KeyboardKeyOsm) {
       return;
     }
-    if (this.isHeld) {
+    if (this.state == OsmState.SINGLE_HOLD) {
+      log('info', 'unhold single now');
       sendKey(this.key, 'up');
-      this.isHeld = false;
+      this.state = OsmState.RELEASED;
       this.keyboardState.unholdOsmKey(this);
     }
   }
@@ -366,11 +377,32 @@ class KeyboardKeyOsm extends KeyboardKey {
   async keyStateChange(
       state: KeyState,
       now: Date) {
-    if (this.isHeld) {
+    const isDoubleTap = this.keyboardState.keyboardStateChanges
+      .filter(sc => sc.key instanceof KeyboardKeyOsm)
+      .filter(sc => sc.state == 'down')
+      .filter(sc => sc.time.getTime() > now.getTime() - 1000)
+      .filter(sc => sc.time.getTime() > this.stateStartTime.getTime())
+      .length >= 2;
+    if (isDoubleTap && state === 'up') {
+      this.state = OsmState.DOUBLE_HOLD;
+      this.stateStartTime = now;
+      log('trace', 'double hold now');
+      this.keyboardState.holdOsmKey(this);
       return;
     }
+    if (this.state == OsmState.DOUBLE_HOLD && state === 'up') {
+      log('trace', 'unhold double hold');
+      let result = super.keyStateChange(state, now);
+      this.state = OsmState.RELEASED;
+      this.keyboardState.unholdOsmKey(this);
+      return result;
+    }
+    if ([OsmState.SINGLE_HOLD, OsmState.DOUBLE_HOLD].includes(this.state)) {
+      return;
+    }
+    log('trace', 'single hold now');
     let result = super.keyStateChange(state, now);
-    this.isHeld = true;
+    this.state = OsmState.SINGLE_HOLD;
     this.keyboardState.holdOsmKey(this);
     return result;
   }
