@@ -227,7 +227,6 @@ async fn async_read_usb_hid_touchpad(
     let mut right_touch_history: VecDeque<TouchEntry> = VecDeque::new();
     let mut last_toggle_window: Instant = Instant::now();
     let mut device = hid_device_factory().unwrap();
-    disable_steam_watchdog(&device);
     let mut pause = false;
     let mut is_visible = true;
     let mut last_read = Instant::now();
@@ -377,7 +376,10 @@ fn hid_device_factory() -> Option<HidDevice> {
     let device_info = device_info_opt.unwrap();
     debug!("[HID thread] device path: {:?}", device_info.path());
     return match device_info.open_device(&api) {
-        Ok(device) => Some(device),
+        Ok(device) => {
+            disable_steam_watchdog(&device);
+            Some(device)
+        },
         Err(_) => None,
     };
 }
