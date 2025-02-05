@@ -1,6 +1,15 @@
-# Tauri + Vanilla TS
+# Steamdeck keyboard
 
-This template should help get you started developing with Tauri in vanilla HTML, CSS and Typescript.
+An on screen keyboard tailored to the steamdeck with additional features.
+
+Here are some goals:
+
+- similar to steam's keyboard, e.g. touchpads for typing
+- better defaults, e.g. transparent by default
+- customizability of the keyboard layout similar to QMK and using CSS for visuals customization
+- more "power user" oriented, e.g. better way to open/hide the keyboard
+
+![image](./docs/screenshot.png "Screenshot showing the keyboard opened up in kate")
 
 ## Recommended IDE Setup
 
