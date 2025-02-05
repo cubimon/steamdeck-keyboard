@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+async function readConfig() {
+  return invoke('read_config');
+}
+
 async function sendKey(
     key: string,
     state: KeyState) {
@@ -30,9 +34,48 @@ interface Area {
   height: number;
 }
 
-const config = {
+interface KeyLayout {
+  key: string | null;
+  label?: string;
+  type?: null | 'osm';
+  size?: string;
+}
+
+interface KeyboardLayout {
+  type: 'column' | 'row';
+  elements: KeyboardLayout[] | KeyLayout[];
+}
+
+interface CursorConfig {
+  forceThreshold: number;
+  hapticOnHover: boolean;
+  hapticOnClick: boolean;
+  area: {
+    left: {
+      top: number;
+      left: number;
+      width: number;
+      height: number;
+    },
+    right: {
+      top: number;
+      left: number;
+      width: number;
+      height: number;
+    }
+  }
+};
+
+interface Config {
+  cursor: CursorConfig;
+  keyboardLayout: KeyboardLayout;
+}
+
+const defaultConfig: { cursor: CursorConfig } = {
   cursor: {
     forceThreshold: 2000,
+    hapticOnHover: true,
+    hapticOnClick: true,
     area: {
       left: {
         top: 0.4,
@@ -46,13 +89,13 @@ const config = {
         width: 0.7,
         height: 0.7
       },
-    }
+    },
   }
 };
 const cursorSize = parseInt(getComputedStyle(document.body).getPropertyValue('--cursorsize').split('px')[0], 10);
 
 
-const keyboardLayout = {
+const defaultKeyboardLayout: KeyboardLayout = {
   'type': 'column',
   'elements': [
     {
@@ -367,7 +410,7 @@ class KeyboardKeyOsm extends KeyboardKey {
       return;
     }
     if (this.state == OsmState.SINGLE_HOLD) {
-      log('info', 'unhold single now');
+      log('trace', 'unhold single now');
       sendKey(this.key, 'up');
       this.state = OsmState.RELEASED;
       this.keyboardState.unholdOsmKey(this);
@@ -429,7 +472,8 @@ function renderKey(
   let result = null;
   switch(object?.type) {
     case 'osm':
-      result = new KeyboardKeyOsm(keyboardState,
+      result = new KeyboardKeyOsm(
+        keyboardState,
         object?.key,
         object?.label);
       break;
@@ -501,6 +545,7 @@ function renderKeyboardLayoutElement(
 }
 
 function handleHoveredKeys(
+    config: Config,
     keyboardState: KeyboardState,
     leftKeys: KeyboardKey[],
     rightKeys: KeyboardKey[]) {
@@ -521,10 +566,10 @@ function handleHoveredKeys(
     key.classList.remove('cursor-hover');
   });
   // if new keys are hovered/cursor moved to new key, send haptic feedback
-  if (newHoveredLeftKeys.length != 0) {
+  if (newHoveredLeftKeys.length != 0 && config?.cursor?.hapticOnHover) {
     triggerHapticPulse(1);
   }
-  if (newHoveredRightKeys.length != 0) {
+  if (newHoveredRightKeys.length != 0 && config?.cursor?.hapticOnHover) {
     triggerHapticPulse(0);
   }
   keyboardState.hoveredLeftKeys = leftKeys;
@@ -569,6 +614,7 @@ function transform(x: number, y: number, area: Area): [number, number] {
 /**
  * Moves/hides/shows cursors depending on input.
  * 
+ * @param config config information
  * @param keyboardState information about current state of the keyboard
  * @param input current input
  * @param lastInput input from last frame/tick
@@ -576,6 +622,7 @@ function transform(x: number, y: number, area: Area): [number, number] {
  * @param rightCursor right cursor for right touchpad
  */
 async function handleTouchpads(
+    config: Config,
     keyboardState: KeyboardState,
     input: SteamDeckDeviceReport,
     lastInput: SteamDeckDeviceReport,
@@ -612,15 +659,21 @@ async function handleTouchpads(
     rightKeys = getKeys(rightCursorX, rightCursorY);
   }
   const now = new Date();
-  handleHoveredKeys(keyboardState, leftKeys, rightKeys);
+  handleHoveredKeys(config, keyboardState, leftKeys, rightKeys);
   if (lastInput.lPadForce < config.cursor.forceThreshold
       && input.lPadForce > config.cursor.forceThreshold) {
+    if (config?.cursor?.hapticOnClick) {
+      triggerHapticPulse(1);
+    }
     keyboardState.keyStateChanges(
       leftKeys, 'down', now);
     keyboardState.pressedLeftKeys = leftKeys;
     leftKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.lPadForce > config.cursor.forceThreshold
       && input.lPadForce < config.cursor.forceThreshold) {
+    if (config?.cursor?.hapticOnClick) {
+      triggerHapticPulse(1);
+    }
     leftKeys.forEach(key => key.classList.remove('pressed'));
     keyboardState.keyStateChanges(
       keyboardState.pressedLeftKeys, 'up', now);
@@ -628,12 +681,18 @@ async function handleTouchpads(
   }
   if (lastInput.rPadForce < config.cursor.forceThreshold
       && input.rPadForce > config.cursor.forceThreshold) {
+    if (config?.cursor?.hapticOnClick) {
+      triggerHapticPulse(0);
+    }
     keyboardState.keyStateChanges(
       rightKeys, 'down', now);
     keyboardState.pressedRightKeys = rightKeys;
     rightKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.rPadForce > config.cursor.forceThreshold
       && input.rPadForce < config.cursor.forceThreshold) {
+    if (config?.cursor?.hapticOnClick) {
+      triggerHapticPulse(0);
+    }
     rightKeys.forEach(key => key.classList.remove('pressed'));
     keyboardState.keyStateChanges(
       keyboardState.pressedRightKeys, 'up', now);
@@ -641,36 +700,74 @@ async function handleTouchpads(
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  log('trace', 'DOM Content loaded event');
-  const body = document.querySelector('body');
-  let keyboardState = new KeyboardState();
-  const renderedKeyboardLayout = renderKeyboardLayoutElement(
-    keyboardState, keyboardLayout);
-  if (renderedKeyboardLayout) {
-    body?.appendChild(renderedKeyboardLayout);
+class App {
+
+  config: Config;
+  keyboardState: KeyboardState;
+  lastInput: SteamDeckDeviceReport | undefined;
+  leftCursor: HTMLElement;
+  rightCursor: HTMLElement;
+
+  constructor() {
+    this.config = {
+      ...defaultConfig,
+      keyboardLayout: defaultKeyboardLayout,
+    }
+    this.keyboardState = new KeyboardState();
+    const leftCursor = document.querySelector<HTMLElement>('#leftCursor');
+    const rightCursor = document.querySelector<HTMLElement>('#rightCursor');
+    if (!leftCursor) {
+      throw Error('Left cursor html element missing');
+    }
+    if (!rightCursor) {
+      throw Error('Right cursor html element missing');
+    }
+    this.leftCursor = leftCursor;
+    this.rightCursor = rightCursor;
   }
-  const leftCursor = document.querySelector<HTMLElement>('#leftCursor');
-  const rightCursor = document.querySelector<HTMLElement>('#rightCursor');
-  if (!leftCursor) {
-    throw Error('Left cursor html element missing');
+
+  async initListener() {
+    await listen('config', this.onConfig.bind(this));
+    await readConfig();
   }
-  if (!rightCursor) {
-    throw Error('Right cursor html element missing');
+
+  async onConfig(event: { payload: string }) {
+    this.config = {
+      ...this.config,
+      ...JSON.parse(event?.payload),
+    }
+    const body = document.querySelector('body');
+    this.keyboardState = new KeyboardState();
+    const renderedKeyboardLayout = renderKeyboardLayoutElement(
+      this.keyboardState, this.config.keyboardLayout);
+    if (renderedKeyboardLayout) {
+      body?.appendChild(renderedKeyboardLayout);
+    }
+    await listen('input', this.onInput.bind(this));
   }
-  let lastInput: SteamDeckDeviceReport | undefined = undefined;
-  listen('input', async (event: { payload: SteamDeckDeviceReport }) => {
+
+  async onInput(event: { payload: SteamDeckDeviceReport }) {
+    if (!this.keyboardState) {
+      return;
+    }
     let input = event.payload;
-    if (!lastInput) {
-      lastInput = input;
+    if (!this.lastInput) {
+      this.lastInput = input;
       return;
     }
     handleTouchpads(
-      keyboardState,
+      this.config,
+      this.keyboardState,
       input,
-      lastInput,
-      leftCursor,
-      rightCursor);
-    lastInput = input;
-  });
+      this.lastInput,
+      this.leftCursor,
+      this.rightCursor);
+    this.lastInput = input;
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  log('trace', 'DOM Content loaded event');
+  const app = new App();
+  app.initListener();
 });

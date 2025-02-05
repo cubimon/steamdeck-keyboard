@@ -11,13 +11,36 @@ use gtk::{gdk::WindowTypeHint, prelude::GtkWindowExt};
 use log::{debug, error, info, log, trace, warn, Level};
 
 use hidapi::{DeviceInfo, HidDevice};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use enigo::{
     Settings,
     Enigo, Key, Keyboard,
     Direction,
 };
+
+#[derive(Debug, Serialize, Deserialize)]
+#[derive(Default)]
+#[serde()]
+struct Config {
+    steam_pid: Option<i32>,
+}
+
+impl Config {
+    fn new() -> Self {
+        Default::default()
+    }
+}
+
+
+struct AppState {
+    enigo: Enigo,
+    steam_pid: Option<i32>,
+    pause_tx: Sender<bool>,
+    trigger_haptic_tx: Sender<u8>,
+    config: Config,
+}
+
 struct TouchEntry {
     x: i16,
     y: i16,
@@ -41,13 +64,6 @@ struct SteamDeckDeviceReport {
     r_pad_y: i16,
     r_pad_force: u16,
     l4: bool,
-}
-
-struct AppState {
-    enigo: Enigo,
-    steam_pid: Option<i32>,
-    pause_tx: Sender<bool>,
-    trigger_haptic_tx: Sender<u8>,
 }
 
 static KEY_MAP: &[(&str, Key)] = &[
@@ -97,6 +113,44 @@ fn map_state(state: &str) -> Option<Direction>{
     }
     error!("unknown state {}", state);
     None
+}
+
+#[tauri::command]
+fn read_config(
+        app_state: State<'_, Mutex<AppState>>,
+        app_handle: tauri::AppHandle) {
+    let home_dir = match std::env::var("HOME") {
+        Ok(home_dir) => home_dir,
+        Err(_) => {
+            error!("Failed to read home env variable, using default");
+            return;
+        }
+    };
+    let path = home_dir + "/.config/steamdeck-keyboard/config.json";
+    let config_str = match fs::read_to_string(path) {
+        Ok(config_str) => config_str,
+        Err(_) => {
+            error!("Failed to read config file, using default");
+            return;
+        }
+    };
+    let mut app_state = app_state.lock().unwrap();
+    let new_config: Config = serde_json::from_str(config_str.as_str())
+        .expect("Config string could not be parsed");
+    if app_state.config.steam_pid.is_none() {
+        match new_config.steam_pid {
+            Some(steam_pid) => {
+                debug!("Using steam pid {} from config", steam_pid);
+                app_state.steam_pid = Some(steam_pid);
+                send_steam_signal(steam_pid, true);
+            },
+            None => {},
+        };
+    }
+    app_state.config = new_config;
+    debug!("new app_state config {}", serde_json::to_string(&app_state.config).unwrap());
+    app_handle.emit("config", config_str)
+        .expect("Should be able to set config");
 }
 
 #[tauri::command]
@@ -192,6 +246,7 @@ pub fn run() {
                 steam_pid: steam_pid,
                 pause_tx: pause_tx,
                 trigger_haptic_tx: trigger_haptic_tx,
+                config: Config::new(),
             }));
             match steam_pid {
                 Some(steam_pid) => send_steam_signal(steam_pid, false),
@@ -209,6 +264,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            read_config,
             send_key,
             toggle_window,
             trigger_haptic_pulse,
@@ -473,11 +529,12 @@ fn get_steam_pid() -> Option<i32> {
 fn send_steam_signal(steam_pid: i32, is_visible: bool) {
     let signal;
     if !is_visible {
+        debug!("sending stop signal to steam process");
         signal = libc::SIGSTOP;
     } else {
+        debug!("sending continue signal to steam process");
         signal = libc::SIGCONT;
     }
-    debug!("sending signal to steam process");
     unsafe {
         libc::kill(steam_pid, signal);
     }
