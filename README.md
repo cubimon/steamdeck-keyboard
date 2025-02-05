@@ -14,9 +14,10 @@ This template should help get you started developing with Tauri in vanilla HTML,
 
 ### TODO
 
-- config file/steam pid from config, keyboard layout/settings from config file
-- layers
+- keyboard layout/settings from config file
+- layers (set display, have a stack of active layers)
 - haptic feedback - smoothen on border, configure/disable, padding on keyboard key?
 - remove pause channel, since pause related everything is done on rust side/hid thread
 - hid thread separate file
+- steamdeck specific split
 - restructure ts
