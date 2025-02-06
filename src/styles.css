@@ -143,3 +143,7 @@ body {
   border: 2px var(--cursorcolor) solid;
   border-radius: var(--cursorsize);
 }
+
+body > .layout:not(.active) {
+  display: none;
+}

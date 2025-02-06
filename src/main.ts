@@ -68,7 +68,9 @@ interface CursorConfig {
 
 interface Config {
   cursor: CursorConfig;
-  keyboardLayout: KeyboardLayout;
+  layers: {
+    [key: string]: KeyboardLayout;
+  };
 }
 
 const defaultConfig: { cursor: CursorConfig } = {
@@ -501,7 +503,8 @@ function renderRowLayout(
     keyboardState: KeyboardState,
     object: any): HTMLElement {
   const result = document.createElement('div');
-  result.className = 'row';
+  result.classList.add('row');
+  result.classList.add('layout');
   for (const element of object?.elements ?? []) {
     const renderedElement = renderKeyboardLayoutElement(
       keyboardState, element)
@@ -516,7 +519,8 @@ function renderColumnLayout(
     keyboardState: KeyboardState,
     object: any): HTMLElement {
   const result = document.createElement('div');
-  result.className = 'column';
+  result.classList.add('column');
+  result.classList.add('layout');
   for (const element of object?.elements ?? []) {
     const renderedElement = renderKeyboardLayoutElement(
       keyboardState, element)
@@ -529,19 +533,61 @@ function renderColumnLayout(
 
 function renderKeyboardLayoutElement(
     keyboardState: KeyboardState,
-    object: any): HTMLElement | undefined {
-  if (isKey(object)) {
-    return renderKey(keyboardState, object);
+    keyboardLayoutElement: KeyboardLayout | KeyLayout): HTMLElement | undefined {
+  if (isKey(keyboardLayoutElement)) {
+    return renderKey(keyboardState, keyboardLayoutElement);
   }
-  if (isLayout(object)) {
-    if (object.type === 'row') {
+  if (isLayout(keyboardLayoutElement)) {
+    if (keyboardLayoutElement.type === 'row') {
       return renderRowLayout(
-        keyboardState, object);
-    } else if (object.type === 'column') {
+        keyboardState, keyboardLayoutElement);
+    } else if (keyboardLayoutElement.type === 'column') {
       return renderColumnLayout(
-        keyboardState, object);
+        keyboardState, keyboardLayoutElement);
     }
   }
+}
+
+function renderKeyboardLayoutLayers(
+    keyboardState: KeyboardState,
+    layers: { [key: string]: KeyboardLayout })
+    : { [key: string]: HTMLElement } {
+  const result: { [key: string]: HTMLElement } = {};
+  for (const [layerName, keyboardLayout] of Object.entries(layers)) {
+    const renderedKeyboardLayout = renderKeyboardLayoutElement(
+      keyboardState, keyboardLayout);
+    if (!renderedKeyboardLayout) {
+      log('error', `Failed to render keyboard layout layer ${layerName}`);
+      continue;
+    }
+    renderedKeyboardLayout.id = layerName;
+    result[layerName] = renderedKeyboardLayout;
+  }
+  return result;
+}
+
+function enableLayer(layerName: string) {
+  if (!layerName) {
+    return;
+  }
+  const layer = document.getElementById(layerName);
+  if (!layer) {
+    log('error', `Layer by name ${layerName} not found`);
+    return;
+  }
+  layer.classList.add('active');
+}
+
+function disableLayer(layerName: string) {
+  if (!layerName) {
+    return;
+  }
+  const layer = document.getElementById(layerName);
+  if (!layer) {
+    log('error', `Layer by name ${layerName} not found`);
+    return;
+  }
+  layer.classList.remove('active');
 }
 
 function handleHoveredKeys(
@@ -711,7 +757,9 @@ class App {
   constructor() {
     this.config = {
       ...defaultConfig,
-      keyboardLayout: defaultKeyboardLayout,
+      layers: {
+        default: defaultKeyboardLayout,
+      }
     }
     this.keyboardState = new KeyboardState();
     const leftCursor = document.querySelector<HTMLElement>('#leftCursor');
@@ -738,11 +786,15 @@ class App {
     }
     const body = document.querySelector('body');
     this.keyboardState = new KeyboardState();
-    const renderedKeyboardLayout = renderKeyboardLayoutElement(
-      this.keyboardState, this.config.keyboardLayout);
-    if (renderedKeyboardLayout) {
+    const renderedKeyboardLayers = renderKeyboardLayoutLayers(
+      this.keyboardState, this.config.layers);
+    // add rendered keyboard layout to DOM
+    Object.values(renderedKeyboardLayers).forEach(renderedKeyboardLayout => {
+      log('debug', `Adding layer ${renderedKeyboardLayout.id} to DOM`);
       body?.appendChild(renderedKeyboardLayout);
-    }
+    });
+    // enable first layer
+    enableLayer(Object.keys(renderedKeyboardLayers)[0]);
     await listen('input', this.onInput.bind(this));
   }
 
