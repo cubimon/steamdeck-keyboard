@@ -21,10 +21,15 @@ Here are some goals:
 
 - On strip issues build with `NO_STRIP=true npm run tauri build`
 
+#### Find steam pid
+
+```bash
+ls -la */exe | grep -i steam$
+```
+
 ### TODO
 
-- keyboard layout/settings from config file
-- layers (set display, have a stack of active layers)
+- keyboard layout
 - haptic feedback - smoothen on border, configure/disable, padding on keyboard key?
 - remove pause channel, since pause related everything is done on rust side/hid thread
 - hid thread separate file

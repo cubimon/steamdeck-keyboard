@@ -46,6 +46,23 @@ interface KeyboardLayout {
   elements: KeyboardLayout[] | KeyLayout[];
 }
 
+/**
+ * Topmost layout which contains an additional flag if active.
+ */
+interface KeyboardLayer extends KeyboardLayout {
+  active: boolean;
+}
+
+/**
+ * layer name => rendered element and keyboard layout.
+ */
+interface RenderedKeyboardLayout {
+  [key: string]: {
+    element: HTMLElement,
+    keyboardLayer: KeyboardLayer
+  }
+}
+
 interface CursorConfig {
   forceThreshold: number;
   hapticOnHover: boolean;
@@ -232,6 +249,7 @@ class KeyboardState {
   afterKeyStateChangeListener: KeyStateChangeListener[] = [];
 
   heldOsmKeys: Set<KeyboardKeyOsm> = new Set();
+  keyboardLayers: { [key: string]: KeyboardLayer } = {};
 
   isOsmShifted(): boolean {
     for (let heldOsmKey of this.heldOsmKeys) {
@@ -277,6 +295,45 @@ class KeyboardState {
     const result = await key.keyStateChange(state, now);
     this.publishAfterKeyStateChange(key, state, now);
     return result;
+  }
+
+  enableLayer(layerName: string) {
+    if (!(layerName in this.keyboardLayers)) {
+      log('error', `Layer name ${layerName} not in layer states`);
+      return;
+    }
+    log('debug', `Enabling layer ${layerName}`);
+    this.keyboardLayers[layerName].active = true;
+    enableLayer(layerName);
+    this.updateLayerStackTransparency();
+  }
+
+  disableLayer(layerName: string) {
+    if (!(layerName in this.keyboardLayers)) {
+      log('error', `Layer name ${layerName} not in layer states`);
+      return;
+    }
+    log('debug', `Disabling layer ${layerName}`);
+    this.keyboardLayers[layerName].active = false;
+    disableLayer(layerName);
+    this.updateLayerStackTransparency();
+  }
+
+  /**
+   * Updates layer transparency depending on active flag,
+   * so that only the topmost layer is visible, but others below are still clickable.
+   */
+  updateLayerStackTransparency() {
+    log('trace', 'Updating layer stack transparency');
+    const layers = Object.entries(this.keyboardLayers)
+      .filter(([_layerName, keyboardLayer]) => keyboardLayer.active);
+    log('trace', `layers size ${layers.length}`);
+    unhideLayer(layers[0][0]);
+    layers
+      .slice(1)
+      .forEach(([layerName, _keyboardLayer]) => {
+        hideLayer(layerName);
+      });
   }
 
   publishBeforeKeyStateChange(
@@ -326,33 +383,100 @@ class KeyboardState {
   }
 }
 
+/**
+ * Options for all keys.
+ */
+interface KeyboardKeyOptionsGeneric {
+  label?: string;
+  /**
+   * e.g. u1, u1.5 or u1.75
+   */
+  size?: string;
+  id?: string;
+}
+
+/**
+ * Press key.
+ */
+interface KeyboardKeyOptionKey {
+  key: string;
+}
+
+/**
+ * Change to layer.
+ */
+interface KeyboardKeyOptionLayer {
+  layer: string;
+}
+
+/**
+ * Transparent key/neither key nor layer change.
+ * Show key behind or nothing
+ */
+interface KeyboardKeyOptionTrans {
+}
+
+type KeyboardKeyOptions =
+  KeyboardKeyOptionsGeneric & (
+  KeyboardKeyOptionKey |
+  KeyboardKeyOptionLayer |
+  KeyboardKeyOptionTrans
+);
+
 class KeyboardKey extends HTMLElement {
 
   button?: HTMLElement;
   keyboardState: KeyboardState;
-  key: string;
+  keyboardLayer: KeyboardLayer;
+  key?: string;
+  layer?: string;
   label: string;
 
   constructor(
       keyboardState: KeyboardState,
-      key: string,
-      label: string) {
+      keyboardLayer: KeyboardLayer,
+      options: KeyboardKeyOptions) {
     super();
     this.keyboardState = keyboardState;
-    this.key = key;
-    this.label = label ?? key;
+    this.keyboardLayer = keyboardLayer;
+    if ('key' in options) {
+      this.key = options.key;
+    }
+    if ('layer' in options) {
+      this.layer = options.layer;
+    }
+    this.label = options?.label ?? this.key ?? "";
     this.addEventListener('mousedown', this.onMouseDown.bind(this));
     this.addEventListener('mouseup', this.onMouseUp.bind(this));
+    if ('key' in options) {
+      this.classList.add(options?.key);
+    }
+    this.classList.add('key');
+    if (options?.size) {
+      this.classList.add(options.size);
+    } else {
+      this.classList.add('u1');
+    }
+    if (options?.id) {
+      this.id = options.id;
+    }
+    if (!this.key && !this.layer) {
+      this.classList.add('transparent');
+    }
   }
 
-  async onMouseDown() {
-    await this.keyboardState.keyStateChange(
-      this, 'down', new Date());
+  async onMouseDown(event: MouseEvent) {
+    log('trace', `Mouse down event { x: ${event.x}, y: ${event.y} }`);
+    getKeys(event.x, event.y).forEach(key => {
+      this.keyboardState.keyStateChange(key, 'down', new Date());
+    });
   }
 
-  async onMouseUp() {
-    await this.keyboardState.keyStateChange(
-      this, 'up', new Date());
+  async onMouseUp(event: MouseEvent) {
+    log('trace', `Mouse up event { x: ${event.x}, y: ${event.y} }`);
+    getKeys(event.x, event.y).forEach(key => {
+      this.keyboardState.keyStateChange(key, 'up', new Date());
+    });
   }
 
   connectedCallback() {
@@ -369,16 +493,56 @@ class KeyboardKey extends HTMLElement {
     return this.key === 'shift';
   }
 
+  /**
+   * if this has no key or layer.
+   *
+   * @returns true if key is transparent
+   */
+  isTrans(): boolean {
+    return !this.key && !this.layer;
+  }
+
+  /**
+   * if layer is active.
+   *
+   * @returns true if layer is active
+   */
+  isActive(): boolean {
+    return this.keyboardLayer.active;
+  }
+
   async keyStateChange(
       state: KeyState,
       _now: Date) {
-    let keyChar = this.key;
-    if (this.keyboardState.isShifted() && keyChar.length == 1) {
-      // to upper case single characters if shifted
-      // e.g. 'l' to 'L' or 'i' to 'I'
-      keyChar = keyChar.toUpperCase();
+    if (state === 'down') {
+      this.classList.add('pressed');
+    } else if (state === 'up') {
+      this.classList.remove('pressed');
     }
-    return sendKey(keyChar, state);
+    if (this.key) {
+      let keyChar = this.key
+      if (this.keyboardState.isShifted() && keyChar.length == 1) {
+        // to upper case single characters if shifted
+        // e.g. 'l' to 'L' or 'i' to 'I'
+        keyChar = keyChar.toUpperCase();
+      }
+      return sendKey(keyChar, state);
+    }
+    if (this.layer) {
+      if (state === 'down') {
+        this.keyboardState.enableLayer(this.layer);
+      } else if (state === 'up') {
+        this.keyboardState.disableLayer(this.layer);
+      }
+    }
+  }
+
+  toString(): string {
+    return `KeyboardKey(
+      key: ${this.key},
+      layer: ${this.layer},
+      label: ${this.label}
+    )`;
   }
 }
 
@@ -395,9 +559,9 @@ class KeyboardKeyOsm extends KeyboardKey {
 
   constructor(
       keyboardState: KeyboardState,
-      key: string,
-      label: string) {
-    super(keyboardState, key, label);
+      keyboardLayer: KeyboardLayer,
+      options: KeyboardKeyOptions) {
+    super(keyboardState, keyboardLayer, options);
     this.state = OsmState.RELEASED;
     this.stateStartTime = new Date();
     this.keyboardState.subscribeAfterKeyStateChange(
@@ -406,14 +570,17 @@ class KeyboardKeyOsm extends KeyboardKey {
 
   afterKeyStateChange(
       key: KeyboardKey,
-      _state: KeyState,
+      state: KeyState,
       _now: Date) {
     if (key instanceof KeyboardKeyOsm) {
       return;
     }
-    if (this.state == OsmState.SINGLE_HOLD) {
-      log('trace', 'unhold single now');
-      sendKey(this.key, 'up');
+    if (this.state == OsmState.SINGLE_HOLD && state == 'up') {
+      if (this.key) {
+        sendKey(this.key, 'up');
+      } else if (this.layer) {
+        this.keyboardState.disableLayer(this.layer);
+      }
       this.state = OsmState.RELEASED;
       this.keyboardState.unholdOsmKey(this);
     }
@@ -431,12 +598,12 @@ class KeyboardKeyOsm extends KeyboardKey {
     if (isDoubleTap && state === 'up') {
       this.state = OsmState.DOUBLE_HOLD;
       this.stateStartTime = now;
-      log('trace', 'double hold now');
+      log('debug', 'double hold now');
       this.keyboardState.holdOsmKey(this);
       return;
     }
     if (this.state == OsmState.DOUBLE_HOLD && state === 'up') {
-      log('trace', 'unhold double hold');
+      log('debug', 'unhold double hold');
       let result = super.keyStateChange(state, now);
       this.state = OsmState.RELEASED;
       this.keyboardState.unholdOsmKey(this);
@@ -451,6 +618,15 @@ class KeyboardKeyOsm extends KeyboardKey {
     this.keyboardState.holdOsmKey(this);
     return result;
   }
+
+  toString(): string {
+    return `KeyboardKeyOsm(
+      key: ${this.key},
+      layer: ${this.layer},
+      label: ${this.label},
+      state: ${this.state}
+    )`;
+  }
 }
 
 if ('customElements' in window) {
@@ -459,9 +635,10 @@ if ('customElements' in window) {
 }
 
 function isKey(object: any) {
-  if ('key' in object) {
+  if ('key' in object || 'layer' in object) {
     return true;
   }
+  return !('elements' in object);
 }
 
 function isLayout(object: any) {
@@ -470,44 +647,36 @@ function isLayout(object: any) {
 
 function renderKey(
     keyboardState: KeyboardState,
+    keyboardLayer: KeyboardLayer,
     object: any): HTMLElement {
   let result = null;
-  switch(object?.type) {
+  switch (object?.type) {
     case 'osm':
+    case 'layer':
       result = new KeyboardKeyOsm(
         keyboardState,
-        object?.key,
-        object?.label);
+        keyboardLayer,
+        object);
       break;
-    case 'layer':
     default:
       result = new KeyboardKey(
         keyboardState,
-        object?.key,
-        object?.label);
+        keyboardLayer,
+        object);
   }
-  result.classList.add(object?.key);
-  result.classList.add('key');
-  if (object?.size) {
-    result.classList.add(object.size);
-  } else {
-    result.classList.add('u1');
-  }
-  if (object?.id) {
-    result.id = object.id;
-  }
-  return result;
+ return result;
 }
 
 function renderRowLayout(
     keyboardState: KeyboardState,
+    keyboardLayer: KeyboardLayer,
     object: any): HTMLElement {
   const result = document.createElement('div');
   result.classList.add('row');
   result.classList.add('layout');
   for (const element of object?.elements ?? []) {
     const renderedElement = renderKeyboardLayoutElement(
-      keyboardState, element)
+      keyboardState, keyboardLayer, element)
     if (renderedElement) {
       result.appendChild(renderedElement);
     }
@@ -517,13 +686,14 @@ function renderRowLayout(
 
 function renderColumnLayout(
     keyboardState: KeyboardState,
+    keyboardLayer: KeyboardLayer,
     object: any): HTMLElement {
   const result = document.createElement('div');
   result.classList.add('column');
   result.classList.add('layout');
   for (const element of object?.elements ?? []) {
     const renderedElement = renderKeyboardLayoutElement(
-      keyboardState, element)
+      keyboardState, keyboardLayer, element)
     if (renderedElement) {
       result.appendChild(renderedElement);
     }
@@ -533,17 +703,18 @@ function renderColumnLayout(
 
 function renderKeyboardLayoutElement(
     keyboardState: KeyboardState,
+    keyboardLayer: KeyboardLayer,
     keyboardLayoutElement: KeyboardLayout | KeyLayout): HTMLElement | undefined {
   if (isKey(keyboardLayoutElement)) {
-    return renderKey(keyboardState, keyboardLayoutElement);
+    return renderKey(keyboardState, keyboardLayer, keyboardLayoutElement);
   }
   if (isLayout(keyboardLayoutElement)) {
     if (keyboardLayoutElement.type === 'row') {
       return renderRowLayout(
-        keyboardState, keyboardLayoutElement);
+        keyboardState, keyboardLayer, keyboardLayoutElement);
     } else if (keyboardLayoutElement.type === 'column') {
       return renderColumnLayout(
-        keyboardState, keyboardLayoutElement);
+        keyboardState, keyboardLayer, keyboardLayoutElement);
     }
   }
 }
@@ -551,17 +722,24 @@ function renderKeyboardLayoutElement(
 function renderKeyboardLayoutLayers(
     keyboardState: KeyboardState,
     layers: { [key: string]: KeyboardLayout })
-    : { [key: string]: HTMLElement } {
-  const result: { [key: string]: HTMLElement } = {};
+    : RenderedKeyboardLayout {
+  const result: RenderedKeyboardLayout = {};
   for (const [layerName, keyboardLayout] of Object.entries(layers)) {
+    const keyboardLayer = {
+      ...keyboardLayout,
+      active: false
+    };
     const renderedKeyboardLayout = renderKeyboardLayoutElement(
-      keyboardState, keyboardLayout);
+      keyboardState, keyboardLayer, keyboardLayout);
     if (!renderedKeyboardLayout) {
       log('error', `Failed to render keyboard layout layer ${layerName}`);
       continue;
     }
     renderedKeyboardLayout.id = layerName;
-    result[layerName] = renderedKeyboardLayout;
+    result[layerName] = {
+      element: renderedKeyboardLayout,
+      keyboardLayer: keyboardLayer,
+    };
   }
   return result;
 }
@@ -575,6 +753,7 @@ function enableLayer(layerName: string) {
     log('error', `Layer by name ${layerName} not found`);
     return;
   }
+  log('trace', `Enabling layer ${layerName}`);
   layer.classList.add('active');
 }
 
@@ -584,10 +763,37 @@ function disableLayer(layerName: string) {
   }
   const layer = document.getElementById(layerName);
   if (!layer) {
-    log('error', `Layer by name ${layerName} not found`);
+    log('error', `Layer by name ${layerName} not found in DOM`);
     return;
   }
+  log('trace', `Disabling layer ${layerName}`);
   layer.classList.remove('active');
+}
+
+function hideLayer(layerName: string) {
+  if (!layerName) {
+    return;
+  }
+  const layer = document.getElementById(layerName);
+  if (!layer) {
+    log('error', `Layer by name ${layerName} not found in DOM`);
+    return;
+  }
+  log('trace', `Hiding layer ${layerName}`);
+  layer.classList.add('transparent');
+}
+
+function unhideLayer(layerName: string) {
+  if (!layerName) {
+    return;
+  }
+  const layer = document.getElementById(layerName);
+  if (!layer) {
+    log('error', `Layer by name ${layerName} not found in DOM`);
+    return;
+  }
+  log('debug', `Unhiding layer ${layerName}`);
+  layer.classList.remove('transparent');
 }
 
 function handleHoveredKeys(
@@ -623,9 +829,22 @@ function handleHoveredKeys(
 }
 
 function getKeys(x: number, y: number): KeyboardKey[] {
+  log('trace', `Getting keys at { x: ${x}, y: ${y} }`);
   const elements = document.elementsFromPoint(x, y);
   const keys = elements.filter(element => element.nodeName.startsWith('KEYBOARD-KEY'));
-  return keys.filter(key => key instanceof KeyboardKey);
+  for (const key of keys) {
+    if (key instanceof KeyboardKey
+        && !key.isTrans()
+        && key.isActive()) {
+      log('trace', `Got key ${key.toString()}`);
+    }
+  }
+  return keys
+    .filter(key => key instanceof KeyboardKey)
+    .filter(key => !key.isTrans())
+    .filter(key => key.isActive())
+    .reverse()
+    .slice(0, 1);
 }
 
 interface SteamDeckDeviceReport {
@@ -714,13 +933,11 @@ async function handleTouchpads(
     keyboardState.keyStateChanges(
       leftKeys, 'down', now);
     keyboardState.pressedLeftKeys = leftKeys;
-    leftKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.lPadForce > config.cursor.forceThreshold
       && input.lPadForce < config.cursor.forceThreshold) {
     if (config?.cursor?.hapticOnClick) {
       triggerHapticPulse(1);
     }
-    leftKeys.forEach(key => key.classList.remove('pressed'));
     keyboardState.keyStateChanges(
       keyboardState.pressedLeftKeys, 'up', now);
     keyboardState.pressedLeftKeys = [];
@@ -733,13 +950,11 @@ async function handleTouchpads(
     keyboardState.keyStateChanges(
       rightKeys, 'down', now);
     keyboardState.pressedRightKeys = rightKeys;
-    rightKeys.forEach(key => key.classList.add('pressed'));
   } else if (lastInput.rPadForce > config.cursor.forceThreshold
       && input.rPadForce < config.cursor.forceThreshold) {
     if (config?.cursor?.hapticOnClick) {
       triggerHapticPulse(0);
     }
-    rightKeys.forEach(key => key.classList.remove('pressed'));
     keyboardState.keyStateChanges(
       keyboardState.pressedRightKeys, 'up', now);
     keyboardState.pressedRightKeys = [];
@@ -789,12 +1004,17 @@ class App {
     const renderedKeyboardLayers = renderKeyboardLayoutLayers(
       this.keyboardState, this.config.layers);
     // add rendered keyboard layout to DOM
-    Object.values(renderedKeyboardLayers).forEach(renderedKeyboardLayout => {
-      log('debug', `Adding layer ${renderedKeyboardLayout.id} to DOM`);
-      body?.appendChild(renderedKeyboardLayout);
+    Object.entries(renderedKeyboardLayers).reverse()
+        .forEach(([layerName, renderedKeyboardLayout]) => {
+      log('debug', `Adding layer ${layerName} to DOM`);
+      this.keyboardState.keyboardLayers[layerName] =
+        renderedKeyboardLayout.keyboardLayer;
+      renderedKeyboardLayout.element.classList.add("keyboard-layout");
+      body?.appendChild(renderedKeyboardLayout.element);
     });
     // enable first layer
-    enableLayer(Object.keys(renderedKeyboardLayers)[0]);
+    const firstLayerName = Object.keys(renderedKeyboardLayers)[0];
+    this.keyboardState.enableLayer(firstLayerName); 
     await listen('input', this.onInput.bind(this));
   }
 

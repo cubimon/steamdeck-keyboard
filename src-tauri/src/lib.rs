@@ -12,6 +12,8 @@ use log::{debug, error, info, log, trace, warn, Level};
 
 use hidapi::{DeviceInfo, HidDevice};
 use serde::{Deserialize, Serialize};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{TrayIconBuilder};
 use tauri::{Emitter, Manager, State};
 use enigo::{
     Settings,
@@ -295,6 +297,21 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async_read_usb_hid_touchpad(
                 app_handle, pause_rx, trigger_haptic_rx));
+            let quit_menu_item= MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit_menu_item])?;
+            let tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .menu_on_left_click(true)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => {
+                      debug!("Quit menu item was clicked");
+                      app.exit(0);
+                    }
+                    _ => {
+                      error!("Menu item {:?} not handled", event.id);
+                    }
+                })
+                .build(app);
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())

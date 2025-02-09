@@ -32,9 +32,6 @@ button {
   box-shadow: -1px 0 rgba(0, 0, 0, 0.2), 0 1px rgba(0, 0, 0, 0.2), 1px 0 rgba(0, 0, 0, 0.2), 0 -1px rgba(0, 0, 0, 0.2);
   /* box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2); */
 }
-button:hover {
-  border-color: #396cd8;
-}
 .cursor-hover > button {
   color: var(--texthovercolor);
   font-weight: bold;
@@ -57,10 +54,6 @@ button:active {
     color: #f6f6f6;
   }
 
-  a:hover {
-    color: #24c8db;
-  }
-
   input,
   button {
     color: #ffffff7f;
@@ -72,6 +65,7 @@ button:active {
 }
 
 body {
+  display: grid;
   background-color: transparent;
   height: 100vh;
   margin: 0;
@@ -136,6 +130,10 @@ body {
   display: none;
 }
 
+.transparent {
+  opacity: 0;
+}
+
 .cursor {
   position: absolute;
   width: var(--cursorsize);
@@ -146,4 +144,9 @@ body {
 
 body > .layout:not(.active) {
   display: none;
+}
+
+.keyboard-layout {
+  grid-column: 1;
+  grid-row: 1;
 }
