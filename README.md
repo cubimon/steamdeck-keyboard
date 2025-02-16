@@ -29,7 +29,6 @@ ls -la */exe | grep -i steam$
 
 ### TODO
 
-- keyboard layout
 - haptic feedback - smoothen on border, configure/disable, padding on keyboard key?
 - remove pause channel, since pause related everything is done on rust side/hid thread
 - hid thread separate file

@@ -1,6 +1,6 @@
 [package]
-name = "virtual-keyboard-pad"
-version = "0.1.0"
+name = "steamdeck-keyboard"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

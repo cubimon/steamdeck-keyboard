@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "virtual-keyboard-pad",
+  "productName": "steamdeck-keyboard",
   "version": "0.1.0",
-  "identifier": "com.virtual-keyboard-pad.app",
+  "identifier": "com.steamdeck-keyboard.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "virtual-keyboard-pad",
+        "title": "steamdeck-keyboard",
         "transparent": true
       }
     ],

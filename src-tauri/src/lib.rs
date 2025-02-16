@@ -1,6 +1,7 @@
 extern crate hidapi;
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -231,6 +232,15 @@ fn toggle_window(
         app_state.pause_tx.send(false).unwrap();
     } else {
         app_state.pause_tx.send(true).unwrap();
+    }
+    // check if steam pid is alive on toggle window
+    if app_state.steam_pid.is_some() && !is_pid_alive(app_state.steam_pid.unwrap()) {
+        match get_steam_pid() {
+            Some(steam_pid) => {
+                app_state.steam_pid = Some(steam_pid)
+            },
+            None => {}
+        }
     }
     match app_state.steam_pid {
         Some(steam_pid) => {
@@ -575,6 +585,13 @@ fn get_steam_pid() -> Option<i32> {
     }
     warn!("steam pid not found");
     return None;
+}
+
+fn is_pid_alive(pid: i32) -> bool {
+    let pid_path = format!("/proc/{}", pid);
+    let result = Path::new(pid_path.as_str()).exists();
+    debug!("Checking if pid is alive, {}: {}", pid_path, result);
+    return result;
 }
 
 /// Pauses or resumes steam process by pid to disable touchpad handling by steam.
