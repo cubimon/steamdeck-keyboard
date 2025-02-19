@@ -23,10 +23,12 @@ use enigo::{
 };
 
 #[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone)]
 #[derive(Default)]
 #[serde()]
 struct Config {
     steam_pid: Option<i32>,
+    deadzone: Option<f32>,
 }
 
 impl Config {
@@ -40,6 +42,7 @@ struct AppState {
     enigo: Enigo,
     steam_pid: Option<i32>,
     pause_tx: Sender<bool>,
+    config_tx: Sender<Config>,
     trigger_haptic_tx: Sender<u8>,
     config: Config,
 }
@@ -185,10 +188,11 @@ fn read_config(
             None => {},
         };
     }
-    app_state.config = new_config;
+    app_state.config = new_config.clone();
     debug!("new app_state config {}", serde_json::to_string(&app_state.config).unwrap());
     app_handle.emit("config", config_str)
         .expect("Should be able to set config");
+    app_state.config_tx.send(new_config).unwrap();
 }
 
 #[tauri::command]
@@ -287,11 +291,13 @@ pub fn run() {
         .setup(|app| {
             let steam_pid = get_steam_pid();
             let (pause_tx, pause_rx) = mpsc::channel::<bool>();
+            let (config_tx, config_rx) = mpsc::channel::<Config>();
             let (trigger_haptic_tx, trigger_haptic_rx) = mpsc::channel::<u8>();
             app.manage(Mutex::new(AppState {
                 enigo: Enigo::new(&Settings::default()).unwrap(),
                 steam_pid: steam_pid,
                 pause_tx: pause_tx,
+                config_tx: config_tx,
                 trigger_haptic_tx: trigger_haptic_tx,
                 config: Config::new(),
             }));
@@ -306,12 +312,12 @@ pub fn run() {
                 "Should be able to set always on top");
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async_read_usb_hid_touchpad(
-                app_handle, pause_rx, trigger_haptic_rx));
+                app_handle, config_rx, pause_rx, trigger_haptic_rx));
             let quit_menu_item= MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_menu_item])?;
             let tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .menu_on_left_click(true)
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => {
                       debug!("Quit menu item was clicked");
@@ -339,6 +345,7 @@ pub fn run() {
 // read hid device and send messages to js frontend
 async fn async_read_usb_hid_touchpad(
         app_handle: tauri::AppHandle,
+        config_rx: mpsc::Receiver<Config>,
         pause_rx: mpsc::Receiver<bool>,
         trigger_haptic_rx: mpsc::Receiver<u8>) -> ! {
     let mut left_touch_history: VecDeque<TouchEntry> = VecDeque::new();
@@ -348,6 +355,16 @@ async fn async_read_usb_hid_touchpad(
     let mut pause = false;
     let mut is_visible = true;
     let mut last_read = Instant::now();
+    let mut deadzone_square: f32 = 9f32;
+    let mut last_emitted_report = SteamDeckDeviceReport{
+        l_pad_x: -100,
+        l_pad_y: -100,
+        l_pad_force: 0,
+        r_pad_x: -100,
+        r_pad_y: -100,
+        r_pad_force: 0,
+        l4: false
+    };
     loop {
         // pause flag
         match pause_rx.try_recv() {
@@ -357,6 +374,19 @@ async fn async_read_usb_hid_touchpad(
             },
             Err(_) => {},
         };
+        // new config
+        match config_rx.try_recv() {
+            Ok(config) => {
+                match config.deadzone {
+                    Some(deadzone) => {
+                        trace!("got deadzone {}", deadzone);
+                        deadzone_square = deadzone * deadzone;
+                    },
+                    None => {},
+                }
+            },
+            Err(_) => {},
+        }
         // haptic
         match trigger_haptic_rx.try_recv() {
             Ok(pad) => {
@@ -467,8 +497,17 @@ async fn async_read_usb_hid_touchpad(
             right touch history size {}",
             left_touch_history.len(), right_touch_history.len());
         if !pause {
-            app_handle.emit("input", device_report).expect(
-                "Should be able to emit device report");
+            let l_x_diff: f32 = (last_emitted_report.l_pad_x - device_report.l_pad_x).into();
+            let l_y_diff: f32 = (last_emitted_report.l_pad_y - device_report.l_pad_y).into();
+            let r_x_diff: f32 = (last_emitted_report.r_pad_x - device_report.r_pad_x).into();
+            let r_y_diff: f32 = (last_emitted_report.r_pad_y - device_report.r_pad_y).into();
+            let l_square_dist = l_x_diff * l_x_diff + l_y_diff * l_y_diff;
+            let r_square_dist = r_x_diff * r_x_diff + r_y_diff * r_y_diff;
+            if l_square_dist > deadzone_square || r_square_dist > deadzone_square {
+                last_emitted_report = device_report.clone();
+                app_handle.emit("input", device_report).expect(
+                    "Should be able to emit device report");
+            }
         }
     }
 }

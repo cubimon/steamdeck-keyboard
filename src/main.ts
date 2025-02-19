@@ -63,57 +63,6 @@ interface RenderedKeyboardLayout {
   }
 }
 
-interface CursorConfig {
-  forceThreshold: number;
-  hapticOnHover: boolean;
-  hapticOnClick: boolean;
-  area: {
-    left: {
-      top: number;
-      left: number;
-      width: number;
-      height: number;
-    },
-    right: {
-      top: number;
-      left: number;
-      width: number;
-      height: number;
-    }
-  }
-};
-
-interface Config {
-  cursor: CursorConfig;
-  layers: {
-    [key: string]: KeyboardLayout;
-  };
-}
-
-const defaultConfig: { cursor: CursorConfig } = {
-  cursor: {
-    forceThreshold: 2000,
-    hapticOnHover: true,
-    hapticOnClick: true,
-    area: {
-      left: {
-        top: 0.4,
-        left: -0.05,
-        width: 0.7,
-        height: 0.7
-      },
-      right: {
-        top: 0.4,
-        left: 0.35,
-        width: 0.7,
-        height: 0.7
-      },
-    },
-  }
-};
-const cursorSize = parseInt(getComputedStyle(document.body).getPropertyValue('--cursorsize').split('px')[0], 10);
-
-
 const defaultKeyboardLayout: KeyboardLayout = {
   'type': 'column',
   'elements': [
@@ -212,6 +161,61 @@ const defaultKeyboardLayout: KeyboardLayout = {
     },
   ]
 };
+
+interface CursorConfig {
+  forceThreshold: number;
+  hapticOnHover: boolean;
+  hapticOnClick: boolean;
+  area: {
+    left: {
+      top: number;
+      left: number;
+      width: number;
+      height: number;
+    },
+    right: {
+      top: number;
+      left: number;
+      width: number;
+      height: number;
+    }
+  }
+};
+
+interface Config {
+  deadzone: number;
+  cursor: CursorConfig;
+  layers: {
+    [key: string]: KeyboardLayout;
+  };
+}
+
+const defaultConfig: Config = {
+  deadzone: 3,
+  cursor: {
+    forceThreshold: 2000,
+    hapticOnHover: true,
+    hapticOnClick: true,
+    area: {
+      left: {
+        top: 0.4,
+        left: -0.05,
+        width: 0.7,
+        height: 0.7
+      },
+      right: {
+        top: 0.4,
+        left: 0.35,
+        width: 0.7,
+        height: 0.7
+      },
+    },
+  },
+  layers: {
+    default: defaultKeyboardLayout,
+  }
+};
+const cursorSize = parseInt(getComputedStyle(document.body).getPropertyValue('--cursorsize').split('px')[0], 10);
 
 type KeyState = 'down' | 'up';
 
@@ -972,9 +976,6 @@ class App {
   constructor() {
     this.config = {
       ...defaultConfig,
-      layers: {
-        default: defaultKeyboardLayout,
-      }
     }
     this.keyboardState = new KeyboardState();
     const leftCursor = document.querySelector<HTMLElement>('#leftCursor');

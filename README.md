@@ -29,7 +29,7 @@ ls -la */exe | grep -i steam$
 
 ### TODO
 
-- haptic feedback - smoothen on border, configure/disable, padding on keyboard key?
+- improve deadzone with timeout
 - remove pause channel, since pause related everything is done on rust side/hid thread
 - hid thread separate file
 - steamdeck specific split
