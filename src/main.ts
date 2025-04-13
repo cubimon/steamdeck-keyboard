@@ -191,7 +191,7 @@ interface Config {
 }
 
 const defaultConfig: Config = {
-  deadzone: 3,
+  deadzone: 500,
   cursor: {
     forceThreshold: 2000,
     hapticOnHover: true,

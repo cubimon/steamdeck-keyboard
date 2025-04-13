@@ -1,20 +1,14 @@
 extern crate hidapi;
 
-use std::collections::VecDeque;
-use std::path::Path;
 use std::str::FromStr;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 use std::{fs, sync::Mutex};
 use std::sync::mpsc::{self, Sender};
 
 use gtk::{gdk::WindowTypeHint, prelude::GtkWindowExt};
-use log::{debug, error, info, log, trace, warn, Level};
+use log::{debug, error, log, warn, Level};
 
-use hidapi::{DeviceInfo, HidDevice};
-use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{TrayIconBuilder};
+use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, State};
 use enigo::{
     Settings,
@@ -22,54 +16,13 @@ use enigo::{
     Direction,
 };
 
-#[derive(Debug, Serialize, Deserialize)]
-#[derive(Clone)]
-#[derive(Default)]
-#[serde()]
-struct Config {
-    steam_pid: Option<i32>,
-    deadzone: Option<f32>,
-}
-
-impl Config {
-    fn new() -> Self {
-        Default::default()
-    }
-}
-
+mod plugin;
 
 struct AppState {
     enigo: Enigo,
-    steam_pid: Option<i32>,
     pause_tx: Sender<bool>,
-    config_tx: Sender<Config>,
+    config_tx: Sender<String>,
     trigger_haptic_tx: Sender<u8>,
-    config: Config,
-}
-
-struct TouchEntry {
-    x: i16,
-    y: i16,
-    force: u16,
-    time: Instant,
-}
-
-impl TouchEntry {
-    fn is_touched(&self) -> bool {
-        return self.x != 0 || self.y != 0;
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SteamDeckDeviceReport {
-    l_pad_x: i16,
-    l_pad_y: i16,
-    l_pad_force: u16,
-    r_pad_x: i16,
-    r_pad_y: i16,
-    r_pad_force: u16,
-    l4: bool,
 }
 
 static KEY_MAP: &[(&str, Key)] = &[
@@ -175,24 +128,10 @@ fn read_config(
             return;
         }
     };
-    let mut app_state = app_state.lock().unwrap();
-    let new_config: Config = serde_json::from_str(config_str.as_str())
-        .expect("Config string could not be parsed");
-    if app_state.config.steam_pid.is_none() {
-        match new_config.steam_pid {
-            Some(steam_pid) => {
-                debug!("Using steam pid {} from config", steam_pid);
-                app_state.steam_pid = Some(steam_pid);
-                send_steam_signal(steam_pid, true);
-            },
-            None => {},
-        };
-    }
-    app_state.config = new_config.clone();
-    debug!("new app_state config {}", serde_json::to_string(&app_state.config).unwrap());
-    app_handle.emit("config", config_str)
+    let app_state = app_state.lock().unwrap();
+    app_handle.emit("config", config_str.clone())
         .expect("Should be able to set config");
-    app_state.config_tx.send(new_config).unwrap();
+    app_state.config_tx.send(config_str).unwrap();
 }
 
 #[tauri::command]
@@ -237,21 +176,6 @@ fn toggle_window(
     } else {
         app_state.pause_tx.send(true).unwrap();
     }
-    // check if steam pid is alive on toggle window
-    if app_state.steam_pid.is_some() && !is_pid_alive(app_state.steam_pid.unwrap()) {
-        match get_steam_pid() {
-            Some(steam_pid) => {
-                app_state.steam_pid = Some(steam_pid)
-            },
-            None => {}
-        }
-    }
-    match app_state.steam_pid {
-        Some(steam_pid) => {
-            send_steam_signal(steam_pid, is_visible);
-        },
-        None => {},
-    }
     // release all modifier
     app_state.enigo.key(Key::Shift, Direction::Release).expect(
         "Should be able to release shift key");
@@ -289,30 +213,24 @@ pub fn run() {
     env_logger::init();
     tauri::Builder::default()
         .setup(|app| {
-            let steam_pid = get_steam_pid();
             let (pause_tx, pause_rx) = mpsc::channel::<bool>();
-            let (config_tx, config_rx) = mpsc::channel::<Config>();
+            let (config_tx, config_rx) = mpsc::channel::<String>();
             let (trigger_haptic_tx, trigger_haptic_rx) = mpsc::channel::<u8>();
+            let plugin = Box::new(plugin::SteamdeckPlugin::new());
             app.manage(Mutex::new(AppState {
                 enigo: Enigo::new(&Settings::default()).unwrap(),
-                steam_pid: steam_pid,
+                // steam_pid: steam_pid,
                 pause_tx: pause_tx,
                 config_tx: config_tx,
                 trigger_haptic_tx: trigger_haptic_tx,
-                config: Config::new(),
             }));
-            match steam_pid {
-                Some(steam_pid) => send_steam_signal(steam_pid, false),
-                None => {},
-            };
             let win = app.get_webview_window("main").unwrap();
             win.set_fullscreen(true).expect(
                 "Should be able to set fullscreen");
             win.set_always_on_top(true).expect(
                 "Should be able to set always on top");
             let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async_read_usb_hid_touchpad(
-                app_handle, config_rx, pause_rx, trigger_haptic_rx));
+            tauri::async_runtime::spawn(plugin_thread(plugin, app_handle, config_rx, pause_rx, trigger_haptic_rx));
             let quit_menu_item= MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_menu_item])?;
             let tray = TrayIconBuilder::new()
@@ -342,327 +260,12 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-// read hid device and send messages to js frontend
-async fn async_read_usb_hid_touchpad(
+async fn plugin_thread(
+        mut plugin: Box<dyn plugin::Plugin>,
         app_handle: tauri::AppHandle,
-        config_rx: mpsc::Receiver<Config>,
+        config_rx: mpsc::Receiver<String>,
         pause_rx: mpsc::Receiver<bool>,
-        trigger_haptic_rx: mpsc::Receiver<u8>) -> ! {
-    let mut left_touch_history: VecDeque<TouchEntry> = VecDeque::new();
-    let mut right_touch_history: VecDeque<TouchEntry> = VecDeque::new();
-    let mut last_toggle_window: Instant = Instant::now();
-    let mut device = hid_device_factory().unwrap();
-    let mut pause = false;
-    let mut is_visible = true;
-    let mut last_read = Instant::now();
-    let mut deadzone_square: f32 = 9f32;
-    let mut last_emitted_report = SteamDeckDeviceReport{
-        l_pad_x: -100,
-        l_pad_y: -100,
-        l_pad_force: 0,
-        r_pad_x: -100,
-        r_pad_y: -100,
-        r_pad_force: 0,
-        l4: false
-    };
-    loop {
-        // pause flag
-        match pause_rx.try_recv() {
-            Ok(message_pause) => {
-                debug!("[HID thread] new pause flag: {}", message_pause);
-                pause = message_pause;
-            },
-            Err(_) => {},
-        };
-        // new config
-        match config_rx.try_recv() {
-            Ok(config) => {
-                match config.deadzone {
-                    Some(deadzone) => {
-                        trace!("got deadzone {}", deadzone);
-                        deadzone_square = deadzone * deadzone;
-                    },
-                    None => {},
-                }
-            },
-            Err(_) => {},
-        }
-        // haptic
-        match trigger_haptic_rx.try_recv() {
-            Ok(pad) => {
-                let mut haptic_report = [0u8; 12];
-                haptic_report[0] = 0;
-                haptic_report[1] = 0x8F; // ID_TRIGGER_HAPTIC_PULSE
-                haptic_report[2] = 8; // next bytes count/size
-                haptic_report[3] = pad; // 0 = right, 1 = left, 2 = both
-                haptic_report[4] = 0xff; // duration lower byte
-                haptic_report[5] = 0xff; // duration upper byte
-                haptic_report[6] = 0x00; // interval lower byte
-                haptic_report[7] = 0x00; // interval upper byte
-                haptic_report[8] = 0x01; // count lower byte
-                haptic_report[9] = 0x00; // count upper byte
-                haptic_report[10] = 0xff; // gain
-                match device.send_feature_report(&mut haptic_report) {
-                    Ok(_) => {},
-                    Err(_) => {
-                        error!("Failed to send hid feature report for haptic");
-                    },
-                }
-                trace!("Doing haptics now");
-            },
-            Err(_) => {},
-        }
-        // input
-        let mut buf = [0u8; 64];
-        let res = match device.read(&mut buf[..]) {
-            Ok(res) => res,
-            Err(_) => {
-                warn!("Failed to read device, reopening after short delay");
-                sleep(Duration::from_millis(1000));
-                device = match hid_device_factory() {
-                    Some(device) => device,
-                    None => {
-                        continue;
-                    }
-                };
-                continue;
-            }
-        };
-        if res != 64 {
-            error!("USB hid response size wasn't 64 but {}", res);
-            continue;
-        }
-        let now = Instant::now();
-        if pause && (now - last_read).as_millis() < 50 {
-            continue;
-        }
-        last_read = now;
-        let device_report = SteamDeckDeviceReport {
-            l_pad_x: i16::from_le_bytes(buf[16..18].try_into().unwrap()),
-            l_pad_y: i16::from_le_bytes(buf[18..20].try_into().unwrap()),
-            l_pad_force: u16::from_le_bytes(buf[56..58].try_into().unwrap()),
-            r_pad_x: i16::from_le_bytes(buf[20..22].try_into().unwrap()),
-            r_pad_y: i16::from_le_bytes(buf[22..24].try_into().unwrap()),
-            r_pad_force: u16::from_le_bytes(buf[58..60].try_into().unwrap()),
-            l4: (u32::from_le_bytes(buf[12..16].try_into().unwrap()) & 0x200) > 0,
-        };
-        left_touch_history.push_back(TouchEntry {
-            x: device_report.l_pad_x,
-            y: device_report.l_pad_y,
-            force: device_report.l_pad_force,
-            time: now,
-        });
-        right_touch_history.push_back(TouchEntry {
-            x: device_report.r_pad_x,
-            y: device_report.r_pad_y,
-            force: device_report.r_pad_force,
-            time: now,
-        });
-        while !left_touch_history.is_empty() {
-            match left_touch_history.front() {
-                Some(front) => {
-                    if now.duration_since(front.time).as_millis() > 2000 {
-                        left_touch_history.pop_front();
-                        continue;
-                    }
-                },
-                None => (),
-            }
-            break;
-        }
-        while !right_touch_history.is_empty() {
-            match right_touch_history.front() {
-                Some(front) => {
-                    if now.duration_since(front.time).as_millis() > 2000 {
-                        right_touch_history.pop_front();
-                        continue;
-                    }
-                },
-                None => (),
-            }
-            break;
-        }
-        if check_keyboard_toggle(
-                &left_touch_history,
-                &right_touch_history,
-                last_toggle_window,
-                is_visible) {
-            debug!("[HID thread] toggle window");
-            last_toggle_window = Instant::now();
-            let state = app_handle.state::<Mutex<AppState>>();
-            is_visible = toggle_window(state, app_handle.clone());
-        }
-        trace!("[HID thread] \
-            left touch history size {}, \
-            right touch history size {}",
-            left_touch_history.len(), right_touch_history.len());
-        if !pause {
-            let l_x_diff: f32 = (last_emitted_report.l_pad_x - device_report.l_pad_x).into();
-            let l_y_diff: f32 = (last_emitted_report.l_pad_y - device_report.l_pad_y).into();
-            let r_x_diff: f32 = (last_emitted_report.r_pad_x - device_report.r_pad_x).into();
-            let r_y_diff: f32 = (last_emitted_report.r_pad_y - device_report.r_pad_y).into();
-            let l_square_dist = l_x_diff * l_x_diff + l_y_diff * l_y_diff;
-            let r_square_dist = r_x_diff * r_x_diff + r_y_diff * r_y_diff;
-            if l_square_dist > deadzone_square || r_square_dist > deadzone_square {
-                last_emitted_report = device_report.clone();
-                app_handle.emit("input", device_report).expect(
-                    "Should be able to emit device report");
-            }
-        }
-    }
+        trigger_haptic_rx: mpsc::Receiver<u8>) {
+    plugin.thread_fn(app_handle, config_rx, pause_rx, trigger_haptic_rx);
 }
 
-fn hid_device_factory() -> Option<HidDevice> {
-    let api = hidapi::HidApi::new().unwrap();
-    for device in api.device_list() {
-        debug!("[HID thread] device: {:#?}, path:{:?}, vendor id: {}, product id: {}",
-            device,
-            device.path(),
-            device.vendor_id(),
-            device.product_id());
-    }
-    let (vid, pid) = (0x28de, 0x1205);
-    let device_info_opt = api.device_list()
-        .filter(|device_info: &&DeviceInfo| device_info.vendor_id() == vid)
-        .filter(|device_info| device_info.product_id() == pid)
-        .filter(|device_info| device_info.interface_number() == 2)
-        .next();
-    if device_info_opt.is_none() {
-        return None;
-    }
-    let device_info = device_info_opt.unwrap();
-    debug!("[HID thread] device path: {:?}", device_info.path());
-    return match device_info.open_device(&api) {
-        Ok(device) => {
-            disable_steam_watchdog(&device);
-            Some(device)
-        },
-        Err(_) => None,
-    };
-}
-
-fn check_keyboard_toggle(
-        left_touch_history: &VecDeque<TouchEntry>,
-        right_touch_history: &VecDeque<TouchEntry>,
-        last_toggle_window: Instant,
-        is_visible: bool) -> bool {
-    if left_touch_history.len() == 0 || right_touch_history.len() == 0 {
-        trace!("left or right touch history is empty");
-        return false;
-    }
-    let last_left_touch = left_touch_history.back().unwrap();
-    let last_right_touch = right_touch_history.back().unwrap();
-    let is_left_touched = last_left_touch.is_touched();
-    let is_right_touched = last_right_touch.is_touched();
-    if is_visible && (!is_left_touched && !is_right_touched) {
-        debug!("Visible and both touchpads released, closing keyboard");
-        return true;
-    }
-    let left_touch_time = get_last_touch_start_time(left_touch_history);
-    let right_touch_time = get_last_touch_start_time(right_touch_history);
-    if left_touch_time.is_none() || right_touch_time.is_none() {
-        trace!("left or right isn't touched");
-        return false;
-    }
-    let left_touch_time = left_touch_time.unwrap();
-    let right_touch_time = right_touch_time.unwrap();
-    if left_touch_time < last_toggle_window || right_touch_time < last_toggle_window {
-        trace!("touch time before last toggle");
-        return false;
-    }
-    let time_diff = if left_touch_time > right_touch_time {
-        left_touch_time - right_touch_time
-    } else {
-        right_touch_time - left_touch_time
-    };
-    let time_diff = time_diff.as_millis();
-    trace!("time difference {}", time_diff);
-    if time_diff < 100 {
-        trace!("time difference below threshold");
-        return true;
-    }
-    return false;
-}
-
-fn get_last_touch_start_time(touch_history: &VecDeque<TouchEntry>) -> Option<Instant> {
-    if touch_history.is_empty() {
-        return None;
-    }
-    let mut curr = touch_history.back().unwrap();
-    for prev in touch_history.iter().rev() {
-        if curr.is_touched() && !prev.is_touched() {
-            return Some(curr.time);
-        }
-        curr = prev;
-    }
-    return None;
-}
-
-/// Find steam pid in /proc
-fn get_steam_pid() -> Option<i32> {
-    let paths = fs::read_dir("/proc").unwrap();
-    for path in paths {
-        let path = match path {
-            Ok(path) => path,
-            Err(_) => continue
-        };
-        let pid = match path.file_name().to_str().unwrap().parse::<i32>() {
-            Ok(pid) => pid,
-            Err(_) => continue,
-        };
-        let mut proc_exe_path = path.path().clone();
-        proc_exe_path.push("exe");
-        let exe_path_result = fs::read_link(proc_exe_path);
-        let exe_path = match exe_path_result {
-            Ok(exe) => exe,
-            Err(_) => continue,
-        };
-        if exe_path.to_str().unwrap() == "/home/deck/.local/share/Steam/ubuntu12_32/steam" {
-            info!("steam pid {}", pid);
-            return Some(pid);
-        }
-    }
-    warn!("steam pid not found");
-    return None;
-}
-
-fn is_pid_alive(pid: i32) -> bool {
-    let pid_path = format!("/proc/{}", pid);
-    let result = Path::new(pid_path.as_str()).exists();
-    debug!("Checking if pid is alive, {}: {}", pid_path, result);
-    return result;
-}
-
-/// Pauses or resumes steam process by pid to disable touchpad handling by steam.
-fn send_steam_signal(steam_pid: i32, is_visible: bool) {
-    let signal;
-    if !is_visible {
-        debug!("sending stop signal to steam process");
-        signal = libc::SIGSTOP;
-    } else {
-        debug!("sending continue signal to steam process");
-        signal = libc::SIGCONT;
-    }
-    unsafe {
-        libc::kill(steam_pid, signal);
-    }
-}
-
-// Disable steam watchdog, so when pausing steam process
-// the steamdeck controller doesn't reset itself to default hid settings
-fn disable_steam_watchdog(device: &HidDevice) {
-    // see https://github.com/torvalds/linux/blob/master/drivers/hid/hid-steam.c
-    debug!("disabling steam watchdog");
-    let mut buf = [0u8; 5];
-    buf[0] = 0x87; // ID_SET_SETTINGS_VALUES
-    buf[1] = 3; // number of settings bytes (without first two)
-    buf[2] = 71; // SETTING_STEAM_WATCHDOG_ENABLE
-    buf[3] = 0;
-    buf[4] = 0;
-    match device.send_feature_report(&buf) {
-        Ok(_) => {},
-        Err(e) => {
-            error!("failed to write hid settings {}", e);
-        },
-    }
-}
