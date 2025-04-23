@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fs, path::Path, sync::{mpsc, Mutex}, thread::sleep, time::{Duration, Instant}};
+use std::{collections::VecDeque, fs, path::Path, sync::{mpsc, Mutex}, thread::sleep, time::{Duration, Instant, SystemTime}};
 use hidapi::{DeviceInfo, HidDevice};
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,8 @@ use tauri::Manager;
 #[serde()]
 struct Config {
     steam_pid: Option<i32>,
-    deadzone: Option<f32>,
+    deadzone_dist: Option<f32>,
+    deadzone_pressure: Option<u16>,
 }
 
 impl Config {
@@ -38,13 +39,15 @@ pub struct SteamdeckPlugin {
     config: Config,
     left_touch_history: VecDeque<TouchEntry>,
     right_touch_history: VecDeque<TouchEntry>,
-    deadzone_square: f32,
+    deadzone_dist_square: f32,
+    deadzone_pressure: u16,
     last_toggle_window: Instant,
     device: HidDevice,
     pause: bool,
     is_visible: bool,
     last_read: Instant,
     last_emitted_report: SteamDeckDeviceReport,
+    start: Instant,
 }
 
 impl SteamdeckPlugin {
@@ -59,7 +62,8 @@ impl SteamdeckPlugin {
             config: config,
             left_touch_history: VecDeque::new(),
             right_touch_history: VecDeque::new(),
-            deadzone_square: 500.0,
+            deadzone_dist_square: 500.0 * 500.0,
+            deadzone_pressure: 500,
             last_toggle_window: Instant::now(),
             device: hid_device_factory().unwrap(),
             pause: false,
@@ -74,6 +78,7 @@ impl SteamdeckPlugin {
                 r_pad_force: 0,
                 l4: false
             },
+            start: Instant::now()
         };
     }
 }
@@ -164,7 +169,6 @@ fn plugin_thread_loop(
                     error!("Failed to send hid feature report for haptic");
                 },
             }
-            trace!("Doing haptics now");
         },
         Err(_) => {},
     }
@@ -190,6 +194,7 @@ fn plugin_thread_loop(
     }
     let now = Instant::now();
     if plugin.pause && (now - plugin.last_read).as_millis() < 50 {
+        trace!("paused and last read within 50ms, skipping");
         return;
     }
     plugin.last_read = now;
@@ -259,7 +264,17 @@ fn plugin_thread_loop(
         let r_y_diff: f32 = (plugin.last_emitted_report.r_pad_y - device_report.r_pad_y).into();
         let l_square_dist = l_x_diff * l_x_diff + l_y_diff * l_y_diff;
         let r_square_dist = r_x_diff * r_x_diff + r_y_diff * r_y_diff;
-        if l_square_dist > plugin.deadzone_square || r_square_dist > plugin.deadzone_square {
+        let l_pressure_diff = if plugin.last_emitted_report.l_pad_force > device_report.l_pad_force {
+            plugin.last_emitted_report.l_pad_force - device_report.l_pad_force
+        } else {
+            device_report.l_pad_force - plugin.last_emitted_report.l_pad_force
+        };
+        let r_pressure_diff = if plugin.last_emitted_report.r_pad_force > device_report.r_pad_force {
+            plugin.last_emitted_report.r_pad_force - device_report.r_pad_force
+        } else {
+            device_report.r_pad_force - plugin.last_emitted_report.r_pad_force
+        };
+        if l_square_dist > plugin.deadzone_dist_square || r_square_dist > plugin.deadzone_dist_square || l_pressure_diff > plugin.deadzone_pressure || r_pressure_diff > plugin.deadzone_pressure {
             plugin.last_emitted_report = device_report.clone();
             app_handle.emit("input", device_report).expect(
                 "Should be able to emit device report");
@@ -289,10 +304,17 @@ fn config_update(
         config_str: String) {
     plugin.config = serde_json::from_str(config_str.as_str())
         .expect("Config string could not be parsed");
-    match plugin.config.deadzone {
-        Some(deadzone) => {
-            trace!("got deadzone {}", deadzone);
-            plugin.deadzone_square = deadzone * deadzone;
+    match plugin.config.deadzone_dist {
+        Some(deadzone_dist) => {
+            trace!("got deadzone_dist {}", deadzone_dist);
+            plugin.deadzone_dist_square = deadzone_dist * deadzone_dist;
+        },
+        None => {},
+    }
+    match plugin.config.deadzone_pressure {
+        Some(deadzone_pressure) => {
+            trace!("got deadzone_pressure {}", deadzone_pressure);
+            plugin.deadzone_pressure = deadzone_pressure;
         },
         None => {},
     }

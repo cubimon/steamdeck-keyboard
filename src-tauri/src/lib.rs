@@ -219,7 +219,6 @@ pub fn run() {
             let plugin = Box::new(plugin::SteamdeckPlugin::new());
             app.manage(Mutex::new(AppState {
                 enigo: Enigo::new(&Settings::default()).unwrap(),
-                // steam_pid: steam_pid,
                 pause_tx: pause_tx,
                 config_tx: config_tx,
                 trigger_haptic_tx: trigger_haptic_tx,

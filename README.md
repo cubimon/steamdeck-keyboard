@@ -29,8 +29,9 @@ ls -la */exe | grep -i steam$
 
 ### TODO
 
-- improve deadzone with timeout
-- remove pause channel, since pause related everything is done on rust side/hid thread
-- hid thread separate file
-- steamdeck specific split
-- restructure ts
+- build/install/autostart/bash into devcontainer/build from outside devcontainer
+- improve deadzone (with timeout/slowly moving to goal/goal = average with deadzone)
+- steamdeck specific split in main.ts
+- split main.ts into different files
+- gtk issue/black webview
+
