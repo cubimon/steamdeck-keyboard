@@ -11,11 +11,40 @@ Here are some goals:
 
 ![image](./docs/screenshot.png "Screenshot showing the keyboard opened up in kate")
 
+## Autostart (Systemd unit)
+
+run `systemctl edit --user --force --full steamdeck-keyboard` and insert:
+
+```systemd
+[Unit]
+Description=Steamdeck keyboard
+
+[Service]
+ExecStart=/home/deck/AppImage/steamdeck-keyboard_0.1.0_amd64.AppImage
+
+[Install]
+WantedBy=multi-user.target
+```
+
+then
+
+- `systemctl enable --user steamdeck-keyboard`
+- `systemctl start  --user steamdeck-keyboard`
+
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 - build devcontainer with `podman build . -t tauri-devcontainer`
 - run with `RUST_LOG=debug ./src-tauri/target/release/bundle/appimage/virtual-keyboard-pad_0.1.0_amd64.AppImage`
+
+## Build
+
+```bash
+devcontainer --docker-path podman --workspace-folder . up
+devcontainer exec --docker-path podman --workspace-folder . bash
+devcontainer exec --docker-path podman --workspace-folder . npm run tauri build
+cp ./src-tauri/target/release/bundle/appimage/steamdeck-keyboard_0.1.0_amd64.AppImage ~/AppImage
+```
 
 ### Common issues
 
