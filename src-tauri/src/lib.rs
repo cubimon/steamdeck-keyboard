@@ -176,15 +176,15 @@ fn toggle_window(
     } else {
         app_state.pause_tx.send(true).unwrap();
     }
-    // release all modifier
-    app_state.enigo.key(Key::Shift, Direction::Release).expect(
-        "Should be able to release shift key");
-    app_state.enigo.key(Key::Alt, Direction::Release).expect(
-        "Should be able to release alt key");
-    app_state.enigo.key(Key::Control, Direction::Release).expect(
-        "Should be able to release control key");
-    app_state.enigo.key(Key::Meta, Direction::Release).expect(
-        "Should be able to release meta key");
+    //// release all modifier
+    //app_state.enigo.key(Key::Shift, Direction::Release).expect(
+    //    "Should be able to release shift key");
+    //app_state.enigo.key(Key::Alt, Direction::Release).expect(
+    //    "Should be able to release alt key");
+    //app_state.enigo.key(Key::Control, Direction::Release).expect(
+    //    "Should be able to release control key");
+    //app_state.enigo.key(Key::Meta, Direction::Release).expect(
+    //    "Should be able to release meta key");
     return !is_visible;
 }
 
