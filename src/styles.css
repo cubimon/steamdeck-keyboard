@@ -15,7 +15,7 @@
   --keysize: 50px;
   --cursorsize: 5px; 
   --cursorcolor: #ff00007f;
-  --texthovercolor: #ff00007f;
+  --texthovercolor: #ffffffff;
 }
 input,
 button {

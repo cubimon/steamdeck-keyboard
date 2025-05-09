@@ -1,20 +1,18 @@
 extern crate hidapi;
 
 use std::str::FromStr;
-use std::{fs, sync::Mutex};
 use std::sync::mpsc::{self, Sender};
+use std::{fs, sync::Mutex};
 
 use gtk::{gdk::WindowTypeHint, prelude::GtkWindowExt};
 use log::{debug, error, log, warn, Level};
 
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use signal_hook::consts::*;
+use signal_hook::iterator::Signals;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, State};
-use enigo::{
-    Settings,
-    Enigo, Key, Keyboard,
-    Direction,
-};
 
 mod plugin;
 
@@ -98,7 +96,7 @@ fn map_key(key: &str) -> Option<Key> {
     None
 }
 
-fn map_state(state: &str) -> Option<Direction>{
+fn map_state(state: &str) -> Option<Direction> {
     if state == "down" {
         return Some(Direction::Press);
     }
@@ -110,9 +108,7 @@ fn map_state(state: &str) -> Option<Direction>{
 }
 
 #[tauri::command]
-fn read_config(
-        app_state: State<'_, Mutex<AppState>>,
-        app_handle: tauri::AppHandle) {
+fn read_config(app_state: State<'_, Mutex<AppState>>, app_handle: tauri::AppHandle) {
     let home_dir = match std::env::var("HOME") {
         Ok(home_dir) => home_dir,
         Err(_) => {
@@ -129,16 +125,14 @@ fn read_config(
         }
     };
     let app_state = app_state.lock().unwrap();
-    app_handle.emit("config", config_str.clone())
+    app_handle
+        .emit("config", config_str.clone())
         .expect("Should be able to set config");
     app_state.config_tx.send(config_str).unwrap();
 }
 
 #[tauri::command]
-fn send_key(
-        app_state: State<'_, Mutex<AppState>>,
-        key: &str,
-        state: &str) {
+fn send_key(app_state: State<'_, Mutex<AppState>>, key: &str, state: &str) {
     println!("sending key {key}");
     let mapped_key = map_key(key);
     let mapped_direction = map_state(state);
@@ -148,19 +142,20 @@ fn send_key(
     }
     debug!("key {} state {}", key, state);
     let mut app_state = app_state.lock().unwrap();
-    app_state.enigo.key(mapped_key.unwrap(), mapped_direction.unwrap()).expect(
-        "Should be able to send key");
+    app_state
+        .enigo
+        .key(mapped_key.unwrap(), mapped_direction.unwrap())
+        .expect("Should be able to send key");
 }
 
 #[tauri::command]
-fn toggle_window(
-        app_state: State<'_, Mutex<AppState>>,
-        app_handle: tauri::AppHandle) -> bool {
+fn toggle_window(app_state: State<'_, Mutex<AppState>>, app_handle: tauri::AppHandle) -> bool {
     let win = app_handle.get_webview_window("main").unwrap();
     let gtk_window = win.gtk_window().unwrap();
     gtk_window.set_type_hint(WindowTypeHint::Dock);
-    let is_visible = win.is_visible().expect(
-        "should be able to check if window is visible");
+    let is_visible = win
+        .is_visible()
+        .expect("should be able to check if window is visible");
     debug!("toggling window");
     if !is_visible {
         debug!("maximizing window");
@@ -176,22 +171,11 @@ fn toggle_window(
     } else {
         app_state.pause_tx.send(true).unwrap();
     }
-    //// release all modifier
-    //app_state.enigo.key(Key::Shift, Direction::Release).expect(
-    //    "Should be able to release shift key");
-    //app_state.enigo.key(Key::Alt, Direction::Release).expect(
-    //    "Should be able to release alt key");
-    //app_state.enigo.key(Key::Control, Direction::Release).expect(
-    //    "Should be able to release control key");
-    //app_state.enigo.key(Key::Meta, Direction::Release).expect(
-    //    "Should be able to release meta key");
     return !is_visible;
 }
 
 #[tauri::command]
-fn trigger_haptic_pulse(
-        app_state: State<'_, Mutex<AppState>>,
-        pad: u8) {
+fn trigger_haptic_pulse(app_state: State<'_, Mutex<AppState>>, pad: u8) {
     let app_state = app_state.lock().unwrap();
     app_state.trigger_haptic_tx.send(pad).unwrap();
 }
@@ -213,35 +197,80 @@ pub fn run() {
     env_logger::init();
     tauri::Builder::default()
         .setup(|app| {
-            let (pause_tx, pause_rx) = mpsc::channel::<bool>();
             let (config_tx, config_rx) = mpsc::channel::<String>();
+            let (pause_tx, pause_rx) = mpsc::channel::<bool>();
+            let (stop_tx, stop_rx) = mpsc::channel::<()>();
             let (trigger_haptic_tx, trigger_haptic_rx) = mpsc::channel::<u8>();
             let plugin = Box::new(plugin::SteamdeckPlugin::new());
+            let enigo = Enigo::new(&Settings::default()).unwrap();
             app.manage(Mutex::new(AppState {
                 enigo: Enigo::new(&Settings::default()).unwrap(),
                 pause_tx: pause_tx,
                 config_tx: config_tx,
                 trigger_haptic_tx: trigger_haptic_tx,
             }));
-            let win = app.get_webview_window("main").unwrap();
-            win.set_fullscreen(true).expect(
-                "Should be able to set fullscreen");
-            win.set_always_on_top(true).expect(
-                "Should be able to set always on top");
+            // signal handler
             let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(plugin_thread(plugin, app_handle, config_rx, pause_rx, trigger_haptic_rx));
-            let quit_menu_item= MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let mut signals =
+                Signals::new(&[SIGINT, SIGTERM]).expect("Failed to setup signal handler");
+            std::thread::spawn(move || {
+                for signal in signals.forever() {
+                    match signal {
+                        SIGINT | SIGTERM => {
+                            // TODO: this doesn't work
+                            debug!("Releaseing keys before stopping process");
+                            let mut enigo = Enigo::new(&Settings::default()).unwrap();
+                            for held_key in enigo.held().0 {
+                                debug!("Releasing held key");
+                                enigo
+                                    .key(held_key, Direction::Release)
+                                    .expect("Could not release held key");
+                            }
+                            enigo
+                                .key(Key::Shift, Direction::Release)
+                                .expect("Should be able to release shift key");
+                            enigo
+                                .key(Key::Alt, Direction::Release)
+                                .expect("Should be able to release alt key");
+                            enigo
+                                .key(Key::Control, Direction::Release)
+                                .expect("Should be able to release control key");
+                            enigo
+                                .key(Key::Meta, Direction::Release)
+                                .expect("Should be able to release meta key");
+                            stop_tx.send(()).unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    break;
+                }
+            });
+            let win = app.get_webview_window("main").unwrap();
+            win.set_fullscreen(true)
+                .expect("Should be able to set fullscreen");
+            win.set_always_on_top(true)
+                .expect("Should be able to set always on top");
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(plugin_thread(
+                plugin,
+                app_handle,
+                config_rx,
+                pause_rx,
+                stop_rx,
+                trigger_haptic_rx,
+            ));
+            let quit_menu_item = MenuItem::with_id(app, "Quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_menu_item])?;
             let tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => {
-                      debug!("Quit menu item was clicked");
-                      app.exit(0);
+                    "Quit" => {
+                        debug!("Quit menu item was clicked");
+                        app.exit(0);
                     }
                     _ => {
-                      error!("Menu item {:?} not handled", event.id);
+                        error!("Menu item {:?} not handled", event.id);
                     }
                 })
                 .build(app);
@@ -260,11 +289,12 @@ pub fn run() {
 }
 
 async fn plugin_thread(
-        mut plugin: Box<dyn plugin::Plugin>,
-        app_handle: tauri::AppHandle,
-        config_rx: mpsc::Receiver<String>,
-        pause_rx: mpsc::Receiver<bool>,
-        trigger_haptic_rx: mpsc::Receiver<u8>) {
-    plugin.thread_fn(app_handle, config_rx, pause_rx, trigger_haptic_rx);
+    mut plugin: Box<dyn plugin::Plugin>,
+    app_handle: tauri::AppHandle,
+    config_rx: mpsc::Receiver<String>,
+    pause_rx: mpsc::Receiver<bool>,
+    stop_rx: mpsc::Receiver<()>,
+    trigger_haptic_rx: mpsc::Receiver<u8>,
+) {
+    plugin.thread_fn(app_handle, config_rx, pause_rx, stop_rx, trigger_haptic_rx);
 }
-
