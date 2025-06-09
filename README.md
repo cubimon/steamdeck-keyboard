@@ -39,11 +39,13 @@ then
 
 ## Build
 
+### Setup
+
 ```bash
 devcontainer --docker-path podman --workspace-folder . up
 devcontainer exec --docker-path podman --workspace-folder . bash
 devcontainer exec --docker-path podman --workspace-folder . npm run tauri build
-cp ./src-tauri/target/release/bundle/appimage/steamdeck-keyboard_0.1.0_amd64.AppImage ~/AppImage
+sudo bash repack-appimage.sh
 ```
 
 ### Common issues

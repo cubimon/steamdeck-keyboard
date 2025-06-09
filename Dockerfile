@@ -1,5 +1,7 @@
 FROM rust:bookworm
 
+# Source: https://github.com/ivangabriele/docker-tauri/blob/main/dockerfiles/debian-bookworm-22.Dockerfile
+
 # Install base utils
 RUN apt-get update
 RUN apt-get install -y \
@@ -7,7 +9,7 @@ RUN apt-get install -y \
   psmisc
 
 # Install Node.js
-RUN curl -fsSL "https://deb.nodesource.com/setup_20.x" | bash -
+RUN curl -fsSL "https://deb.nodesource.com/setup_22.x" | bash -
 RUN apt-get install -y nodejs
 
 # Install Yarn
